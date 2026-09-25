@@ -43,6 +43,8 @@ This repository provides the training code: a privileged dense-tracking teacher,
 - [ ] Release code on retargeting and augmentation
 - [ ] Release code for finetuning
 
+The complete retargeted and augmented dataset is already available in the [Data](#-data) section. The first TODO is for the code used to produce it.
+
 ## ⚙️ Installation
 
 See [docs/install.md](docs/install.md): Python 3.8, `pip install -r requirements.txt`, IsaacGym Preview 4, and
