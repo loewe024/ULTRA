@@ -32,8 +32,6 @@
 
 <div align="center">
   <img src="assets/ultra_demo.gif" width="100%" alt="ULTRA demo"/>
-  <br>
-  <a href="assets/ultra_demo.mp4">Full-resolution demo with audio</a>
 </div>
 
 > **ULTRA** is a single multimodal controller for humanoid whole-body loco-manipulation: it tracks a motion reference when one is available, and acts from egocentric perception and a sparse goal when it is not — one policy, one set of weights, on a real Unitree G1.
