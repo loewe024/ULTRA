@@ -1,0 +1,31 @@
+<mujoco model="suitcase">
+  <compiler angle="radian" coordinate="global"/>
+
+  <asset>
+    <mesh name="suitcase_mesh" file="objects/suitcase/suitcase.obj" scale="1 1 1"/>
+    <material name="suitcase_mat" rgba="0.7 0.8 0.9 1"/>
+  </asset>
+
+  <default>
+    <default class="suitcase_phys">
+      <geom
+        contype="1" conaffinity="1"
+        friction="1.2 0.1 0.1"
+        density="10"
+        solimp="0.99 0.99 0.01"
+        solref="0.01 1"
+      />
+    </default>
+  </default>
+
+  <worldbody>
+    <body name="suitcase" pos="0 0 0.9" quat="1 0 0 0">
+      <freejoint name="suitcase_free"/>
+
+      <geom class="suitcase_phys"
+            name="suitcase_geom"
+            type="mesh" mesh="suitcase_mesh"
+            material="suitcase_mat"/>
+    </body>
+  </worldbody>
+</mujoco>

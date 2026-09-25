@@ -1,0 +1,26 @@
+# Core (IsaacGym Preview 4 must be installed separately, see docs/install.md)
+torch>=1.13
+# IsaacGym Preview 4 still uses the removed np.float alias -> numpy must be < 1.24
+numpy>=1.21,<1.24
+pyyaml
+rl-games==1.1.4
+tensorboard
+tensorboardX
+protobuf==3.20.*
+trimesh
+scipy
+tqdm
+imageio[ffmpeg]
+opencv-python
+pillow
+psutil
+gym
+
+# MuJoCo sim2sim
+mujoco>=3.0
+
+# Optional: experiment logging (disable with WANDB_DISABLED=true)
+wandb
+
+# Optional: ultra/visualize_vae_latent.py only
+# scikit-learn umap-learn matplotlib sentence-transformers

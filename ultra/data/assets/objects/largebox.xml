@@ -1,0 +1,31 @@
+<mujoco model="largebox">
+  <compiler angle="radian" coordinate="global"/>
+
+  <asset>
+    <mesh name="largebox_mesh" file="objects/largebox/largebox.obj" scale="1 1 1"/>
+    <material name="largebox_mat" rgba="0.7 0.8 0.9 1"/>
+  </asset>
+
+  <default>
+    <default class="largebox_phys">
+      <geom
+        contype="1" conaffinity="1"
+        friction="1.2 0.1 0.1"
+        solimp="0.99 0.99 0.01"
+        solref="0.01 1"
+        density="10"
+      />
+    </default>
+  </default>
+
+  <worldbody>
+    <body name="largebox" pos="0 0 0.9" quat="1 0 0 0">
+      <freejoint name="largebox_free"/>
+
+      <geom class="largebox_phys"
+            name="largebox_geom"
+            type="mesh" mesh="largebox_mesh"
+            material="largebox_mat"/>
+    </body>
+  </worldbody>
+</mujoco>

@@ -1,0 +1,42 @@
+# training outputs / logs
+output/
+outputs/
+runs/
+logs/
+wandb/
+checkpoints/
+teacher/
+student*/
+eval/
+eval_results/
+latent_vis*/
+sim2sim_videos*/
+events.out.tfevents*
+*.pth
+*.pt
+*.mp4
+*.avi
+*.npz
+*.npy
+*.pkl
+
+# datasets (download separately, see README)
+InterAct/
+OMOMO*/
+
+# generated at runtime (merge_mjcf scenes, --save_images frames / videos)
+ultra/data/assets/merge/
+ultra/data/images/
+ultra/data/videos/
+
+# python / editors / OS
+**/__pycache__/
+*.pyc
+.vscode/
+.idea/
+.claude/
+.DS_Store
+.nfs*
+__MACOSX/
+*slurm*
+*.script

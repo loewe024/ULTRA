@@ -1,0 +1,31 @@
+<mujoco model="smallbox">
+  <compiler angle="radian" coordinate="global"/>
+
+  <asset>
+    <mesh name="smallbox_mesh" file="objects/smallbox/smallbox.obj" scale="1 1 1"/>
+    <material name="smallbox_mat" rgba="0.7 0.8 0.9 1"/>
+  </asset>
+
+  <default>
+    <default class="smallbox_phys">
+      <geom
+        contype="1" conaffinity="1"
+        friction="1.2 0.1 0.1"
+        density="10"
+        solimp="0.99 0.99 0.01"
+        solref="0.01 1"
+      />
+    </default>
+  </default>
+
+  <worldbody>
+    <body name="smallbox" pos="0 0 0.9" quat="1 0 0 0">
+      <freejoint name="smallbox_free"/>
+
+      <geom class="smallbox_phys"
+            name="smallbox_geom"
+            type="mesh" mesh="smallbox_mesh"
+            material="smallbox_mat"/>
+    </body>
+  </worldbody>
+</mujoco>

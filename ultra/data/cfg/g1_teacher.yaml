@@ -1,0 +1,228 @@
+# if given, will override the device setting in gym. 
+env: 
+  numEnvs: 4096
+  envSpacing: 5
+  episodeLength: 300
+  isFlagrun: False
+  enableDebugVis: False
+  playdataset: False
+  projtype: "None"
+  saveImages: False
+  initVel: False
+  moreRigid: False
+  pdControl: True
+  powerScale: 1.0
+  controlFrequencyInv: 17 # 17 x 1 ms physics steps per policy step (~60 Hz); one reference frame per step
+  stateInit: "Hybrid" #Random
+  rolloutLength: 300
+  hybridInitProb: 0.1
+  dataFPS: 30 # unused by the G1 tasks (reference data is consumed at one frame per policy step, 60 fps)
+  dataFramesScale: 1 # 25->30fps
+  ballSize: 1.
+  numObs: 4052
+  numDoF: 29
+  numDoFWrist: 3
+  numDoFHand: 0
+  motion_file: InterAct/OMOMO_retarget_aug
+  robotType: 'g1/g1_29dof.urdf'
+  objectDensity: 25
+  localRootObs: False
+  keyBodies: ['left_hip_yaw_link', 'left_knee_link', 'left_ankle_roll_link', 'right_hip_yaw_link', 'right_knee_link', 'right_ankle_roll_link', 
+              'torso_link', 'mid360_link', 
+              'left_shoulder_yaw_link', 'left_elbow_link', 'left_rubber_hand', 
+              'right_shoulder_yaw_link', 'right_elbow_link', 'right_rubber_hand', ]
+  keyIndex: [ 1,  2,  3,  5,  6,  7,  
+              9, 13, 
+              15,  16,  17,  
+              34, 35, 36, ]
+  contactBodies: ['left_hip_yaw_link', 'left_knee_link', 'left_ankle_roll_link', 'right_hip_yaw_link', 'right_knee_link', 'right_ankle_roll_link', 
+              'torso_link', 'mid360_link', 
+              'left_shoulder_yaw_link', 'left_elbow_link', 'left_rubber_hand', 
+              'right_shoulder_yaw_link', 'right_elbow_link', 'right_rubber_hand', ]
+  contactIndex: [ 1,  2,  3,  5,  6,  7,  
+              9, 13, 
+              15,  16,  17,  
+              34, 35, 36, ]
+  # contactBodies: ["L_Hip", "L_Knee", "L_Ankle", "L_Toe", "R_Hip", "R_Knee", "R_Ankle", "R_Toe", "Torso", "Spine", "Chest", "Neck", "Head", "L_Thorax", "L_Shoulder", "L_Elbow", "L_Wrist", "R_Thorax", "R_Shoulder", "R_Elbow", "R_Wrist", "L_Index3", "L_Middle3", "L_Pinky3", "L_Ring3","L_Thumb3","R_Index3", "R_Middle3", "R_Pinky3", "R_Ring3","R_Thumb3"] #["right_foot", "left_foot"]
+  terminationHeight: 0.15
+  enableEarlyTermination: True
+  scaling: 0.8
+  initRootHeight: 0.95
+  history_len: 10
+  # Required by the shared UltraG1Retarget base class (allocates the proprio history buffer); the
+  # proprio-history path is only used by the student task, so these are inactive for teacher training.
+  numObsProprio: 92
+  # Probability to keep the object task observation / interaction-graph features per episode (code defaults);
+  # the rest of the environments see them zeroed, which is what the MuJoCo teacher builder (utils/obs.py) does.
+  obs_task_keep_prob: 0.3
+  obs_ig_keep_prob: 0.1
+  asset:
+    assetRoot: "ultra/data/assets"
+
+  plane:
+    staticFriction: 1.0
+    dynamicFriction: 1.0
+    restitution: 0
+  
+  rewardWeights:
+    p: 10.
+    r: 5.
+    pv: 0.1
+    rv: 0.001
+
+    op: 5.0
+    or: 0.5
+    opv: 0.1
+    orv: 0.
+
+    ig: 20.
+
+    cg1: 5.
+    cg2: 5.
+
+    # eg1: 0.00005
+    # eg2: 0.00005
+    # eg3: 0.000000005
+    eg1: 0.0000
+    eg2: 0.000001
+    eg3: 0.0000000001
+
+smooth_rewards:
+  scales:
+    base_lin_vel: -0.1  # base linear velocity
+    ang_vel: -0.01 # -0.1  # angular velocity
+    dof_vel: -0.0004 # -0.001  # joint velocity
+    action_rate: -0.1  # action rate
+    torques: -0.001 # -0.003  # torques
+    dof_pos_limits: -5  # joint position limits
+    dof_torque_limits: -1 # -5  # joint torque limits
+    energy: -0.0001  # energy consumption
+    # dof_acc: -1e6  # joint acceleration
+    dof_acc_all: -0.0
+    delta_dof_vel_all: -0.00002
+    contact_change: -0.00005
+    delta_ang_vel_all: -0.0005
+    torques_vel_all: -0.0000000002
+    # ankle_dof_pos_limits: -5  # ankle joint position limits
+    # upper_dof_pos_limits: -5  # upper body joint position limits
+    # dof_torque_limits_upper: -5  # upper body joint torque limits
+    # ankle_torques: -0.01  # ankle torques
+    # upper_torques: -0.01  # upper body torques
+    termination: -50
+
+    feet_orientation: -0.35 # -1
+    # feet_contact_forces: -0.5
+    feet_stumble: -10
+    foot_slip: -0.1 # -0.0333 # -0.5
+    feet_distance: -0.1
+    knee_distance: -0.1
+    # collision: -0.2
+    stand_on_feet: -1.0
+    swing_clearance: -0.6
+  max_contact_force: 500
+  min_dist: 0.25
+  max_dist: 0.65
+  max_knee_dist: 0.65
+  soft_torque_limit: 0.95
+
+
+sim:
+  substeps: 1
+  physx:
+    num_threads: 8
+    solver_type: 1  # TGS is good
+    num_position_iterations: 4
+    num_velocity_iterations: 1         # ← better contact resolution
+    contact_offset: 0.02               # ← more forgiving contact layer
+    rest_offset: 0.0                 # ← helps avoid constant contact toggling
+    bounce_threshold_velocity: 0.2     # ← disables all bounce logic
+    max_depenetration_velocity: 1.0    # ← allows reasonable correction without jumpiness
+    default_buffer_size_multiplier: 20.0
+    max_gpu_contact_pairs: 69206016 # 8*1024*1024
+
+  flex:
+    num_inner_iterations: 10
+    warm_start: 0.25
+
+control:
+  # NOTE: only stiffness/damping below are legacy and NOT used - Humanoid_G1._build_env (env/tasks/humanoid_g1.py)
+  # hard-codes the per-DoF gains/armature/effort limits of the released policies. action_scale and control_type
+  # ARE read by Humanoid_SMPLX._compute_torques every physics substep and must stay at the released values.
+  stiffness: {
+            "hip_yaw": 150,
+            "hip_roll": 150,
+            "hip_pitch": 200,
+            "knee": 200,
+            "ankle": 20,
+            "shoulder": 40,
+            "elbow": 40,
+            "waist": 200,
+        }  # [N*m/rad]
+  damping: {
+      "hip_yaw": 5,
+      "hip_roll": 5,
+      "hip_pitch": 5,
+      "knee": 5,
+      "ankle": 4,
+      "shoulder": 10,
+      "elbow": 10,
+      "waist": 5,
+  }  # [N*m/rad]  # [N*m*s/rad]
+
+  action_scale: 3
+  control_type: "P"
+
+
+domain_rand:
+  domain_rand_general: True  # manually set this, setting from parser does not work
+
+  randomize_gravity: True  # use 'True' directly; logical expressions are not supported in YAML
+  gravity_rand_interval_s: 4
+  gravity_range: [-0.1, 0.1]
+
+  randomize_friction: True
+  friction_range: [0.5, 2.0]
+
+  randomize_base_mass: True
+  added_mass_range: [-3.0, 3.0]
+
+  randomize_base_com: True
+  added_com_range: [-0.05, 0.05]
+
+  push_robots: True
+  push_interval_s: 4
+  max_push_vel_xy: 1.0
+
+  randomize_motor: True
+  motor_strength_range: [0.8, 1.2]
+
+  action_delay: True
+  action_buf_len: 8
+
+  # Object physics randomization (UltraG1Retarget.randomize_physical_properties, independent of
+  # domain_rand_general). These are the code defaults the released teacher was trained with.
+  obj_mass_range: [0.15, 1.5]
+  obj_mass_rare_range: [0.001, 0.01]
+  obj_mass_rare_every: 10
+  obj_com_range: [-0.05, 0.05]
+  obj_inertia_range: [0.5, 2.0]
+  obj_friction_range: [0.2, 1.2]
+  obj_restitution_range: [0.0, 0.3]
+  obj_rolling_friction_range: [0.0, 0.05]
+  obj_torsion_friction_range: [0.0, 0.05]
+  obj_compliance_range: [0.0, 1.0]
+  obj_rest_offset_range: [0.0, 0.01]
+  obj_contact_offset_range: [0.01, 0.03]
+
+
+noise:
+  add_noise: True
+  noise_level: 1.0
+  noise_increasing_steps: 3000
+
+  noise_scales:
+      dof_pos: 0.01
+      dof_vel: 0.1
+      ang_vel: 0.05
+      imu: 0.05
+      root_pos: 0.02

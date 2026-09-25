@@ -1,0 +1,31 @@
+<mujoco model="plasticbox">
+  <compiler angle="radian" coordinate="global"/>
+
+  <asset>
+    <mesh name="plasticbox_mesh" file="objects/plasticbox/plasticbox.obj" scale="1 1 1"/>
+    <material name="plasticbox_mat" rgba="0.7 0.8 0.9 1"/>
+  </asset>
+
+  <default>
+    <default class="plasticbox_phys">
+      <geom
+        contype="1" conaffinity="1"
+        friction="1.2 0.1 0.1"
+        density="10"
+        solimp="0.99 0.99 0.01"
+        solref="0.01 1"
+      />
+    </default>
+  </default>
+
+  <worldbody>
+    <body name="plasticbox" pos="0 0 0.9" quat="1 0 0 0">
+      <freejoint name="plasticbox_free"/>
+
+      <geom class="plasticbox_phys"
+            name="plasticbox_geom"
+            type="mesh" mesh="plasticbox_mesh"
+            material="plasticbox_mat"/>
+    </body>
+  </worldbody>
+</mujoco>
