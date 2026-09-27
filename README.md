@@ -43,7 +43,7 @@ This repository provides the training code: a privileged dense-tracking teacher,
 - [ ] Release code on retargeting and augmentation
 - [ ] Release code for finetuning
 
-The complete retargeted and augmented dataset is already available in the [Data](#-data) section. The first TODO is for the code used to produce it.
+The complete OMOMO-derived dataset is already available in the [Data](#-data) section. The first TODO is for the code used to produce it.
 
 ## ⚙️ Installation
 
@@ -52,8 +52,14 @@ See [docs/install.md](docs/install.md): Python 3.8, `pip install -r requirements
 
 ## 📦 Data
 
-Download the retargeted G1 rollouts from [Google Drive](https://drive.google.com/file/d/1g6OzxXGJczZ4klVqKCpTzy-orKkllCr4/view?usp=sharing), unzip, and place them under `InterAct/OMOMO_retarget_aug/` (git-ignored), one `.pt` per clip. The G1
-and object assets are already in `ultra/data/assets/`.
+We release the complete OMOMO-derived dataset used to train ULTRA: physics-based retargeted G1 rollouts and
+physics-based augmented rollouts. As described in the [paper](https://arxiv.org/abs/2603.03279), our physics-driven
+neural retargeting policy produces physically feasible motion in simulation; zero-shot augmentation scales motion
+trajectories and objects while preserving physical plausibility.
+
+Download the dataset from [Google Drive](https://drive.google.com/file/d/1g6OzxXGJczZ4klVqKCpTzy-orKkllCr4/view?usp=sharing),
+unzip, and place the `.pt` clips under `InterAct/OMOMO_retarget_aug/` (git-ignored). The G1 and object assets are
+already in `ultra/data/assets/`.
 
 ## 🚀 Training
 
