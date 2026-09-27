@@ -1,5 +1,6 @@
 #!/bin/bash
-# Roll out a trained teacher in the IsaacGym viewer.
+# Roll out a trained teacher in the IsaacGym viewer with the training environment.
+# To save a rollout, use ultra/run_teacher_inference.py.
 # Usage: scripts/play_teacher.sh checkpoints/g1_teacher.pth [num_envs] [extra args...]
 set -e
 cd "$(dirname "$0")/.."

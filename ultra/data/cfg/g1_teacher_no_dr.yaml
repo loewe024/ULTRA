@@ -1,0 +1,254 @@
+env:
+  numEnvs: 4096
+  envSpacing: 5
+  episodeLength: 300
+  isFlagrun: false
+  enableDebugVis: false
+  playdataset: false
+  projtype: None
+  saveImages: false
+  initVel: false
+  moreRigid: false
+  pdControl: true
+  powerScale: 1.0
+  controlFrequencyInv: 17
+  stateInit: Start
+  rolloutLength: 300
+  hybridInitProb: 0.0
+  dataFPS: 30
+  dataFramesScale: 1
+  ballSize: 1.0
+  numObs: 4052
+  numDoF: 29
+  numDoFWrist: 3
+  numDoFHand: 0
+  motion_file: InterAct/OMOMO_retarget_aug
+  robotType: g1/g1_29dof.urdf
+  objectDensity: 25
+  localRootObs: false
+  keyBodies:
+  - left_hip_yaw_link
+  - left_knee_link
+  - left_ankle_roll_link
+  - right_hip_yaw_link
+  - right_knee_link
+  - right_ankle_roll_link
+  - torso_link
+  - mid360_link
+  - left_shoulder_yaw_link
+  - left_elbow_link
+  - left_rubber_hand
+  - right_shoulder_yaw_link
+  - right_elbow_link
+  - right_rubber_hand
+  keyIndex:
+  - 1
+  - 2
+  - 3
+  - 5
+  - 6
+  - 7
+  - 9
+  - 13
+  - 15
+  - 16
+  - 17
+  - 34
+  - 35
+  - 36
+  contactBodies:
+  - left_hip_yaw_link
+  - left_knee_link
+  - left_ankle_roll_link
+  - right_hip_yaw_link
+  - right_knee_link
+  - right_ankle_roll_link
+  - torso_link
+  - mid360_link
+  - left_shoulder_yaw_link
+  - left_elbow_link
+  - left_rubber_hand
+  - right_shoulder_yaw_link
+  - right_elbow_link
+  - right_rubber_hand
+  contactIndex:
+  - 1
+  - 2
+  - 3
+  - 5
+  - 6
+  - 7
+  - 9
+  - 13
+  - 15
+  - 16
+  - 17
+  - 34
+  - 35
+  - 36
+  terminationHeight: 0.15
+  enableEarlyTermination: true
+  scaling: 0.8
+  initRootHeight: 0.95
+  history_len: 10
+  numObsProprio: 92
+  obs_task_keep_prob: 1.0
+  obs_ig_keep_prob: 1.0
+  asset:
+    assetRoot: ultra/data/assets
+  plane:
+    staticFriction: 1.0
+    dynamicFriction: 1.0
+    restitution: 0
+  rewardWeights:
+    p: 10.0
+    r: 5.0
+    pv: 0.1
+    rv: 0.001
+    op: 5.0
+    or: 0.5
+    opv: 0.1
+    orv: 0.0
+    ig: 20.0
+    cg1: 5.0
+    cg2: 5.0
+    eg1: 0.0
+    eg2: 1.0e-06
+    eg3: 1.0e-10
+smooth_rewards:
+  scales:
+    base_lin_vel: -0.1
+    ang_vel: -0.01
+    dof_vel: -0.0004
+    action_rate: -0.1
+    torques: -0.001
+    dof_pos_limits: -5
+    dof_torque_limits: -1
+    energy: -0.0001
+    dof_acc_all: -0.0
+    delta_dof_vel_all: -2.0e-05
+    contact_change: -5.0e-05
+    delta_ang_vel_all: -0.0005
+    torques_vel_all: -2.0e-10
+    termination: -50
+    feet_orientation: -0.35
+    feet_stumble: -10
+    foot_slip: -0.1
+    feet_distance: -0.1
+    knee_distance: -0.1
+    stand_on_feet: -1.0
+    swing_clearance: -0.6
+  max_contact_force: 500
+  min_dist: 0.25
+  max_dist: 0.65
+  max_knee_dist: 0.65
+  soft_torque_limit: 0.95
+sim:
+  substeps: 1
+  physx:
+    num_threads: 8
+    solver_type: 1
+    num_position_iterations: 4
+    num_velocity_iterations: 1
+    contact_offset: 0.02
+    rest_offset: 0.0
+    bounce_threshold_velocity: 0.2
+    max_depenetration_velocity: 1.0
+    default_buffer_size_multiplier: 20.0
+    max_gpu_contact_pairs: 69206016
+  flex:
+    num_inner_iterations: 10
+    warm_start: 0.25
+control:
+  stiffness:
+    hip_yaw: 150
+    hip_roll: 150
+    hip_pitch: 200
+    knee: 200
+    ankle: 20
+    shoulder: 40
+    elbow: 40
+    waist: 200
+  damping:
+    hip_yaw: 5
+    hip_roll: 5
+    hip_pitch: 5
+    knee: 5
+    ankle: 4
+    shoulder: 10
+    elbow: 10
+    waist: 5
+  action_scale: 3
+  control_type: P
+domain_rand:
+  domain_rand_general: false
+  randomize_gravity: false
+  gravity_rand_interval_s: 4
+  gravity_range:
+  - -0.1
+  - 0.1
+  randomize_friction: false
+  friction_range:
+  - 0.5
+  - 2.0
+  randomize_base_mass: false
+  added_mass_range:
+  - -3.0
+  - 3.0
+  randomize_base_com: false
+  added_com_range:
+  - -0.05
+  - 0.05
+  push_robots: false
+  push_interval_s: 4
+  max_push_vel_xy: 1.0
+  randomize_motor: false
+  motor_strength_range:
+  - 1.0
+  - 1.0
+  action_delay: false
+  action_buf_len: 8
+  obj_mass_range:
+  - 1.0
+  - 1.0
+  obj_mass_rare_range:
+  - 1.0
+  - 1.0
+  obj_mass_rare_every: 0
+  obj_com_range:
+  - 0.0
+  - 0.0
+  obj_inertia_range:
+  - 1.0
+  - 1.0
+  obj_friction_range:
+  - 0.6
+  - 0.6
+  obj_restitution_range:
+  - 0.05
+  - 0.05
+  obj_rolling_friction_range:
+  - 0.01
+  - 0.01
+  obj_torsion_friction_range:
+  - 0.01
+  - 0.01
+  obj_compliance_range:
+  - 0.0
+  - 0.0
+  obj_rest_offset_range:
+  - 0.0
+  - 0.0
+  obj_contact_offset_range:
+  - 0.02
+  - 0.02
+noise:
+  add_noise: false
+  noise_level: 0.0
+  noise_increasing_steps: 3000
+  noise_scales:
+    dof_pos: 0.01
+    dof_vel: 0.1
+    ang_vel: 0.05
+    imu: 0.05
+    root_pos: 0.02

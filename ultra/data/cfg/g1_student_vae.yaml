@@ -52,7 +52,7 @@ env:
   enableEarlyTermination: True
   scaling: 0.8
   initRootHeight: 0.95
-  teacherPolicy: checkpoints/g1_teacher.pth  # trained Stage-2 teacher checkpoint used as the DAgger expert
+  teacherPolicy: ultra/weights/teacher_ultra_inference.pth  # included tracking teacher used as the DAgger expert
   history_len: 10 # 0 for no history, >0 for history length
   # Observation masking configuration (for robustness)
   obj_deviation_threshold: 0.5  # Max point deviation (m) before masking teacher object/IG obs

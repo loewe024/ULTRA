@@ -1,5 +1,5 @@
 # Core (IsaacGym Preview 4 must be installed separately, see docs/install.md)
-torch>=1.13
+torch>=2.0
 # IsaacGym Preview 4 still uses the removed np.float alias -> numpy must be < 1.24
 numpy>=1.21,<1.24
 pyyaml

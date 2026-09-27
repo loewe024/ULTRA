@@ -11,6 +11,7 @@ env:
   initVel: False
   moreRigid: False
   pdControl: True
+  retargetPositionControl: True # use Isaac Gym position targets only for UltraG1 retargeting
   powerScale: 1.0
   controlFrequencyInv: 17 # 17 x 1 ms physics steps per policy step (~60 Hz); one reference frame per step
   stateInit: "Start" #Random

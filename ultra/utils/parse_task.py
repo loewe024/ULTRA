@@ -39,7 +39,7 @@ import numpy as np
 
 def warn_task_name():
     raise Exception(
-        "Unrecognized task!\nTask should be one of: [Ultra, UltraG1, UltraG1Retarget, UltraDistillObjV2Point]")
+        "Unrecognized task!\nTask should be one of: [Ultra, UltraG1, UltraG1Retarget, UltraDistillObjV2Point, UltraDistillObjV3RL]")
 
 def parse_task(args, cfg, cfg_train, sim_params):
 
@@ -67,6 +67,8 @@ def parse_task(args, cfg, cfg_train, sim_params):
     return task, env
 
 def parse_task_distill(args, cfg, cfg_train, sim_params):
+    if args.task == "UltraDistillObjV3RL":
+        from env.tasks.ultra_g1_distill_obj_v3rl import UltraDistillObjV3RL
 
     # create native task and pass custom config
     device_id = args.device_id

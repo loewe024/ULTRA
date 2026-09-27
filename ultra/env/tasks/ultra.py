@@ -243,7 +243,6 @@ class Ultra(Humanoid_SMPLX):
         self._build_target(env_id, env_ptr)
         return   
 
-
     def _load_target_asset(self): # smplx
         asset_root = "ultra/data/assets/objects/diverse/"
         self._target_asset = []
@@ -257,7 +256,12 @@ class Ultra(Humanoid_SMPLX):
             asset_file = object_name_scaled + ".urdf"
             obj_file = asset_root + object_name + '/' + object_name_scaled + '.obj'
             new_asset_root = asset_root + object_name
-            max_convex_hulls = random.randint(1, 10)
+            if self.cfg['env'].get('retargetPositionControl', False):
+                max_convex_hulls = 5
+            elif not self.cfg['domain_rand']['domain_rand_general']:
+                max_convex_hulls = 10
+            else:
+                max_convex_hulls = random.randint(1, 10)
             density = self.object_density
         
             asset_options = gymapi.AssetOptions()

@@ -24,7 +24,7 @@
     <img src='https://img.shields.io/badge/Paper-PDF-yellow?style=flat&logo=arXiv&logoColor=yellow'></a>
   <a href='https://ultra-humanoid.github.io/'>
     <img src='https://img.shields.io/badge/Project-Page-green?style=flat&logo=Google%20chrome&logoColor=green'></a>
-  <a href='https://github.com/MuLinjiu/ULTRA-locomanip'>
+  <a href='https://github.com/Sirui-Xu/ULTRA'>
     <img src='https://img.shields.io/badge/GitHub-Code-black?style=flat&logo=github&logoColor=white'></a>
 </p>
 
@@ -36,15 +36,6 @@
 
 > **ULTRA** is a single multimodal controller for humanoid whole-body loco-manipulation: it tracks a motion reference when one is available, and acts from egocentric perception and a sparse goal when it is not — one policy, one set of weights, on a real Unitree G1.
 
-This repository provides the training code: a privileged dense-tracking teacher, distilled into a single multimodal student with a compact latent space, plus IsaacGym playback and MuJoCo sim2sim.
-
-## 📝 TODO
-
-- [ ] Release code on retargeting and augmentation
-- [ ] Release code for finetuning
-
-The complete OMOMO-derived dataset is already available in the [Data](#-data) section. The first TODO is for the code used to produce it.
-
 ## ⚙️ Installation
 
 See [docs/install.md](docs/install.md): Python 3.8, `pip install -r requirements.txt`, IsaacGym Preview 4, and
@@ -52,32 +43,121 @@ See [docs/install.md](docs/install.md): Python 3.8, `pip install -r requirements
 
 ## 📦 Data
 
-We release the complete OMOMO-derived dataset used to train ULTRA: physics-based retargeted G1 rollouts and
-physics-based augmented rollouts. As described in the [paper](https://arxiv.org/abs/2603.03279), our physics-driven
-neural retargeting policy produces physically feasible motion in simulation; zero-shot augmentation scales motion
-trajectories and objects while preserving physical plausibility.
+| Download | Used for | Extract `.pt` files to |
+| --- | --- | --- |
+| [InterMimic prepared OMOMO references](https://drive.google.com/file/d/1l2E5qR97Ap8jrLrJPHmtNT8DDW1qKhY_/view?usp=sharing) | SMPL-X retargeting input · `[T, 591]` | `InterAct/OMOMO_retarget/` |
+| [ULTRA retargeted and augmented data](https://drive.google.com/file/d/1g6OzxXGJczZ4klVqKCpTzy-orKkllCr4/view?usp=sharing) | G1 teacher/student training · `[T, 630]` | `InterAct/OMOMO_retarget_aug/` |
 
-Download the dataset from [Google Drive](https://drive.google.com/file/d/1g6OzxXGJczZ4klVqKCpTzy-orKkllCr4/view?usp=sharing),
-unzip, and place the `.pt` clips under `InterAct/OMOMO_retarget_aug/` (git-ignored). The G1 and object assets are
-already in `ultra/data/assets/`.
+The released G1 archive contains **OMOMO physics-based retargeted and augmented motions**. The source archive follows [InterMimic's data format](https://github.com/Sirui-Xu/InterMimic#data).
 
-## 🚀 Training
+<details>
+<summary>Data layout and supported objects</summary>
+
+Place the `.pt` files directly in the directories above. ULTRA includes assets for `largebox`, `plasticbox`, `smallbox`, and `suitcase`; the retargeting script selects motions for these objects.
+
+</details>
+
+## 🚀 Reproduce the pipeline
+
+| Stage | Input → output | Entry point |
+| --- | --- | --- |
+| 1 · Retarget | Prepared OMOMO SMPL-X → G1 policy | `scripts/train_retarget_smplx.sh` |
+| 2 · Augment | SMPL-X + trained policy → G1 rollouts | `scripts/export_retarget_smplx.py` |
+| 3 · Train teacher | G1 rollouts → tracking policy | `scripts/train_teacher.sh` |
+| 4 · Distill student | G1 rollouts + included teacher → student | `scripts/train_student.sh` |
+| 5 · Finetune student | Distilled student → goal-directed policy | `scripts/train_finetune.sh` |
+
+<details>
+<summary><strong>1 · Train the retargeting policy</strong></summary>
+
+After extracting the InterMimic `OMOMO_retarget` archive, run from the repository root:
+
+```bash
+scripts/train_retarget_smplx.sh
+```
+
+The script prepares supported object clips in `InterAct/OMOMO_retarget_supported_080_080_080/` and trains `UltraG1` with **position target PD control**. This data generation stage has no domain randomization, random pushes, or observation noise.
+
+The configuration runs up to 50,000 epochs and writes checkpoints to `output/retarget_smplx/g1_retarget_smplx/nn/`.
+
+</details>
+
+<details>
+<summary><strong>2 · Export retargeted and augmented G1 motion</strong></summary>
+
+Use a trained retargeting checkpoint to replay the prepared references. `--xyz X Y Z` scales the sparse trajectories along each axis; repeat it for augmentation variants. `--asset-scale` selects an available object size (`080_080_080` or `100_100_100`).
+
+```bash
+python scripts/export_retarget_smplx.py \
+  --input-dir InterAct/OMOMO_retarget \
+  --checkpoint output/retarget_smplx/g1_retarget_smplx/nn/g1_retarget_smplx.pth \
+  --output-dir output/retarget_export_080 \
+  --asset-scale 080_080_080 \
+  --xyz 1 1 1 --xyz 1.05 1 0.95
+
+# Repeat with the larger released object assets.
+python scripts/export_retarget_smplx.py \
+  --input-dir InterAct/OMOMO_retarget \
+  --checkpoint output/retarget_smplx/g1_retarget_smplx/nn/g1_retarget_smplx.pth \
+  --output-dir output/retarget_export_100 \
+  --asset-scale 100_100_100 \
+  --xyz 1 1 1 --xyz 1.05 1 0.95
+```
+
+The exporter writes the resulting G1 motions to the chosen output directory. The released `InterAct/OMOMO_retarget_aug/` archive is ready to use for teacher training.
+
+</details>
+
+<details>
+<summary><strong>3–4 · Train a teacher and distill the student</strong></summary>
 
 ```bash
 # Teacher — dense full-body tracking (PPO, 4096 envs). Output: output/teacher/g1_teacher/nn/
 scripts/train_teacher.sh
 
-# Student — multimodal distillation from the teacher. First set env.teacherPolicy in
-# ultra/data/cfg/g1_student_vae.yaml to the teacher checkpoint (default: checkpoints/g1_teacher.pth).
+# Student — multimodal distillation from the included teacher checkpoint.
 scripts/train_student.sh
 NUM_GPUS=4 scripts/train_student_multigpu.sh          # torchrun, single node
 ```
 
-Every script forwards extra arguments to Python, e.g. `--num_envs N`, `--motion_file <dir>`, `--headless`,
-`--output_path <dir>`. With few environments also pass a smaller `--minibatch_size` (rl_games requires
-`minibatch_size <= num_envs * horizon_length`). Weights & Biases is optional: `WANDB_DISABLED=true` turns it off.
+The teacher uses `InterAct/OMOMO_retarget_aug/` by default. Pass `--motion_file <directory>` to train on another G1 motion directory.
+
+</details>
+
+<details>
+<summary><strong>5 · Finetune the student</strong></summary>
+
+Start RL finetuning from a distilled student checkpoint:
+
+```bash
+scripts/train_finetune.sh <student.pth>
+```
+
+The finetuning configuration uses `InterAct/OMOMO_retarget_aug/` and the included tracking teacher by default.
+
+</details>
 
 ## 🎮 Inference
+
+### 🧠 Tracking teacher
+
+The included checkpoint at `ultra/weights/teacher_ultra_inference.pth` is used for student distillation and inference. See the [model card](docs/teacher-model-card.md) for its training data and use terms.
+
+For the released checkpoint, we further trained on AMASS and BONES-SEED alongside OMOMO after the original work. The training code in this repository follows the original OMOMO setting.
+
+<details>
+<summary>Run teacher inference</summary>
+
+```bash
+# Put one retargeted G1 .pt clip in /absolute/path/to/one_motion_dir.
+python ultra/run_teacher_inference.py --motion-dir /absolute/path/to/one_motion_dir
+```
+
+The command writes `output/teacher_inference/rollout.pt` with observed/reference states and actions from the motion. Use `--checkpoint <teacher.pth>` for another tracking teacher or change `env.teacherPolicy` in `ultra/data/cfg/g1_student_vae.yaml` for distillation.
+
+</details>
+
+### 🤖 Student
 
 ```bash
 scripts/play_student.sh <student.pth> 1 full_track      # IsaacGym playback (also: sparse_track, object_obs points)

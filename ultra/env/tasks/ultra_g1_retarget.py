@@ -96,7 +96,7 @@ class UltraG1Retarget(Humanoid_G1, Ultra):
 
         # Track which environments should "stand still" (10% of environments)
         # These environments will have a fixed reference frame to train the policy to stand still
-        self.stand_still_ratio = 0.01
+        self.stand_still_ratio = 0.01 if cfg['domain_rand']['domain_rand_general'] else 0.0
         self.is_stand_still = torch.zeros(self.num_envs, device=self.device, dtype=torch.bool)
         self.stand_still_frame = torch.zeros(self.num_envs, device=self.device, dtype=torch.long)
 
@@ -266,7 +266,7 @@ class UltraG1Retarget(Humanoid_G1, Ultra):
         return   
 
     def _reset_target(self, env_ids):
-        noise = _DEFAULT_NOISE_STD
+        noise = _DEFAULT_NOISE_STD if self.cfg['domain_rand']['domain_rand_general'] else dict.fromkeys(_DEFAULT_NOISE_STD, 0.0)
 
         obj_pos      = self.hoi_refs[self.data_id[env_ids], self.ref_index[env_ids], self.progress_buf[env_ids], 71:74]
         obj_rot      = self.hoi_refs[self.data_id[env_ids], self.ref_index[env_ids], self.progress_buf[env_ids], 74:78]
@@ -357,6 +357,8 @@ class UltraG1Retarget(Humanoid_G1, Ultra):
         mat33.z.z = vals.z
     
     def randomize_physical_properties(self, env_ptr, target_handle):
+        if not self.cfg['domain_rand']['domain_rand_general']:
+            return
         # Sample new properties
         env_cfg = self.cfg.get("env", {})
         dr_cfg = self.cfg.get("domain_rand", {})
@@ -463,7 +465,7 @@ class UltraG1Retarget(Humanoid_G1, Ultra):
         return
     
     def _set_env_state(self, env_ids, root_pos, root_rot, dof_pos, root_vel, root_ang_vel, dof_vel):
-        noise = _DEFAULT_NOISE_STD
+        noise = _DEFAULT_NOISE_STD if self.cfg['domain_rand']['domain_rand_general'] else dict.fromkeys(_DEFAULT_NOISE_STD, 0.0)
         root_pos_new = _randn_like(root_pos, noise["root_pos"]) * (self.progress_buf[env_ids, None] < 0.5) + root_pos * (self.progress_buf[env_ids, None] > 0.5)
         # root_pos_new[..., 2:3] = (root_pos[..., 2:3] + 0.1) * (self.progress_buf[env_ids, None] < 0.5) + (root_pos[..., 2:3] + 0.01) * (self.progress_buf[env_ids, None] > 0.5)
         root_rot_new = _perturb_quat(root_rot, noise["root_rot"]) * (self.progress_buf[env_ids, None] < 0.5) + root_rot * (self.progress_buf[env_ids, None] > 0.5)
@@ -1002,6 +1004,8 @@ class UltraG1Retarget(Humanoid_G1, Ultra):
         return 
 
     def _rand_vec(self, vec, scale=0.1):
+        if not self.cfg['domain_rand']['domain_rand_general']:
+            return vec
         return vec + (2 * torch.rand_like(vec) - 1) * scale
     
     def play_dataset_step(self, time):

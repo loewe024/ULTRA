@@ -378,7 +378,9 @@ class Humanoid_SMPLX(BaseTask):
             root_states = self._humanoid_root_states[env_ids]
             tar_states = self._target_states[env_ids]
         
-        obs, obj_points = compute_obj_observations(root_states, tar_states, self.object_points[self.object_id[self.data_id[env_ids]]], ref_obs)
+        obs, obj_points = compute_obj_observations(
+            root_states, tar_states, self.object_points[self.object_id[self.data_id[env_ids]]],
+            ref_obs, add_noise=not self.cfg["env"].get("retargetPositionControl", False))
         return obs, obj_points
     
     def _compute_observations_iter(self, env_ids=None, delta_t=1):
@@ -559,11 +561,19 @@ class Humanoid_SMPLX(BaseTask):
             self.ang_vel_list = [self.ang_vel_list[-1]]
         else:
             self.ang_vel_list = []
+        position_control = self.cfg["env"].get("retargetPositionControl", False)
+        if position_control:
+            pd_tar_tensor = gymtorch.unwrap_tensor(self._action_to_pd_targets(self.actions))
         for i in range(self.control_freq_inv):
-            self.torques = self._compute_torques(self.actions)
-            self.gym.set_dof_actuation_force_tensor(self.sim, gymtorch.unwrap_tensor(self.torques))
+            if position_control:
+                self.gym.set_dof_position_target_tensor(self.sim, pd_tar_tensor)
+            else:
+                self.torques = self._compute_torques(self.actions)
+                self.gym.set_dof_actuation_force_tensor(self.sim, gymtorch.unwrap_tensor(self.torques))
             self.gym.simulate(self.sim)
             self._refresh_sim_tensors()
+            if position_control:
+                self.torques = self.dof_force_tensor.clone()
             self.dof_vel_list.append(self._dof_vel.clone())
             self.ang_vel_list.append(self._rigid_body_ang_vel[:,0,:].clone())
             self.torques_list.append(self.torques.clone())
@@ -724,13 +734,14 @@ class Humanoid_SMPLX(BaseTask):
 def _rand_vec(vec, scale=0.1):
     return vec + (2 * torch.rand_like(vec) - 1) * scale
 
-def compute_obj_observations(root_states, tar_states, object_points, ref_obs):
-    root_pos = _rand_vec(root_states[:, 0:3], 0.01)
-    root_rot = _rand_vec(root_states[:, 3:7], 0.1)
+def compute_obj_observations(root_states, tar_states, object_points, ref_obs, add_noise=True):
+    perturb = _rand_vec if add_noise else lambda vec, scale: vec
+    root_pos = perturb(root_states[:, 0:3], 0.01)
+    root_rot = perturb(root_states[:, 3:7], 0.1)
 
-    tar_pos = _rand_vec(tar_states[:, 0:3], 0.01)
-    tar_rot = _rand_vec(tar_states[:, 3:7], 0.1)
-    tar_vel = _rand_vec(tar_states[:, 7:10], 0.1)
+    tar_pos = perturb(tar_states[:, 0:3], 0.01)
+    tar_rot = perturb(tar_states[:, 3:7], 0.1)
+    tar_vel = perturb(tar_states[:, 7:10], 0.1)
     tar_ang_vel = tar_states[:, 10:13]
 
     obj_rot_extend = tar_rot.unsqueeze(1).repeat(1, object_points.shape[1], 1).view(-1, 4)

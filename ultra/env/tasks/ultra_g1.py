@@ -1,4 +1,5 @@
 import torch
+from pathlib import Path
 
 from isaacgym import gymtorch
 from isaacgym.torch_utils import *
@@ -26,6 +27,44 @@ class UltraG1(Humanoid_G1, Ultra):
                                    to_torch([0, 0, 0, 0.5], device=self.device, dtype=torch.float),
                                    to_torch([0] * (self._num_actions_hand + self._num_actions_wrist), device=self.device, dtype=torch.float)])
         return
+
+    def _physics_step(self):
+        if self.cfg["env"].get("retargetExportPath"):
+            if not hasattr(self, "_export_frames"):
+                self._export_frames = []
+            if not self._export_frames:
+                self._capture_retarget_frame()
+        super()._physics_step()
+        if self.cfg["env"].get("retargetExportPath"):
+            self._capture_retarget_frame()
+
+    def post_physics_step(self):
+        super().post_physics_step()
+        if self.cfg["env"].get("retargetExportPath") and bool(self.reset_buf[0]):
+            self._save_retarget_rollout()
+
+    def _capture_retarget_frame(self):
+        contact = torch.any(torch.abs(self._contact_forces[0]) > 0.1, dim=-1).float()
+        frame = torch.cat((
+            self._humanoid_root_states[0],
+            self._dof_pos[0], self._dof_vel[0],
+            self._target_states[0],
+            self._rigid_body_pos[0].reshape(-1),
+            self._rigid_body_rot[0].reshape(-1),
+            self._rigid_body_vel[0].reshape(-1),
+            self._rigid_body_ang_vel[0].reshape(-1),
+            contact,
+        )).detach().cpu()
+        self._export_frames.append(frame)
+
+    def _save_retarget_rollout(self):
+        # UltraG1 prepends 30 standing frames to each reference.
+        frames = torch.stack(self._export_frames[30:])
+        destination = Path(self.cfg["env"]["retargetExportPath"])
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        torch.save(frames, destination)
+        print("ULTRA_RETARGET_EXPORT", destination, tuple(frames.shape), flush=True)
+        self._export_frames = []
 
     def _compute_reward(self, actions):
         super()._compute_reward(actions)
@@ -55,6 +94,8 @@ class UltraG1(Humanoid_G1, Ultra):
             self.fps_data = new_fps = 60.
 
             loaded_dict['root_pos'] = interp_time_series(loaded_dict['hoi_data'][:, 0:3].clone(), factor=2, mode='linear')
+            xyz = torch.tensor(self.cfg['env'].get('sparseXYZMultiplier', [1., 1., 1.]), device=self.device, dtype=torch.float32)
+            loaded_dict['root_pos'] *= xyz
             loaded_dict['root_pos_vel'] = (loaded_dict['root_pos'][1:,:].clone() - loaded_dict['root_pos'][:-1,:].clone())*self.fps_data
             loaded_dict['root_pos_vel'] = torch.cat((torch.zeros((1, loaded_dict['root_pos_vel'].shape[-1])).to('cuda'),loaded_dict['root_pos_vel']),dim=0)
 
@@ -76,11 +117,13 @@ class UltraG1(Humanoid_G1, Ultra):
 
             loaded_dict['key_body_pos'] = loaded_dict['body_pos'][:, self._key_body_ids_gt, :].reshape(loaded_dict['body_pos'].shape[0],-1).clone()
 
+            loaded_dict['key_body_pos'] = (loaded_dict['key_body_pos'].reshape(-1, len(self._key_body_ids_gt), 3) * xyz).reshape(-1, len(self._key_body_ids_gt) * 3)
             loaded_dict['key_body_pos_vel'] = (loaded_dict['key_body_pos'][1:,:].clone() - loaded_dict['key_body_pos'][:-1,:].clone())*self.fps_data
             loaded_dict['key_body_pos_vel'] = torch.cat((torch.zeros((1, loaded_dict['key_body_pos_vel'].shape[-1])).to('cuda'),loaded_dict['key_body_pos_vel']),dim=0)
 
             loaded_dict['obj_pos'] = interp_time_series(loaded_dict['hoi_data'][:, 318:321].clone(), factor=2, mode='linear')
 
+            loaded_dict['obj_pos'] *= xyz
             loaded_dict['obj_pos_vel'] = (loaded_dict['obj_pos'][1:,:].clone() - loaded_dict['obj_pos'][:-1,:].clone())*self.fps_data
             if self.init_vel:
                 loaded_dict['obj_pos_vel'] = torch.cat((loaded_dict['obj_pos_vel'][:1],loaded_dict['obj_pos_vel']),dim=0)

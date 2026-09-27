@@ -203,10 +203,17 @@ env_configurations.register('rlgpu', {
 def build_alg_runner(algo_observer):
     runner = Runner(algo_observer)
 
-    runner.algo_factory.register_builder('ultra', lambda **kwargs : ultra_agent_distill_vae.UltraAgentDistill(**kwargs))
+    if args.task == 'UltraDistillObjV3RL':
+        from learning import ultra_agent_distill_vae_rl, ultra_network_builder_obj_v3
+        agent = ultra_agent_distill_vae_rl.UltraAgentDistill
+        builder = ultra_network_builder_obj_v3.UltraBuilder
+    else:
+        agent = ultra_agent_distill_vae.UltraAgentDistill
+        builder = ultra_network_builder_obj_v2.UltraBuilder
+    runner.algo_factory.register_builder('ultra', lambda **kwargs: agent(**kwargs))
     runner.player_factory.register_builder('ultra', lambda **kwargs : ultra_players_distill.UltraPlayerContinuousDistill(**kwargs))
     runner.model_builder.model_factory.register_builder('ultra', lambda network, **kwargs : ultra_models.ModelUltraContinuous(network))
-    runner.model_builder.network_factory.register_builder('ultra', lambda **kwargs : ultra_network_builder_obj_v2.UltraBuilder())
+    runner.model_builder.network_factory.register_builder('ultra', lambda **kwargs: builder())
 
     return runner
 
@@ -218,6 +225,9 @@ def main():
     set_np_formatting()
     args = get_args()
     cfg, cfg_train, logdir = load_cfg(args)
+
+    if args.resume_from:
+        cfg_train['params']['config']['resume_from'] = args.resume_from
 
     cfg_train['params']['seed'] = set_seed(cfg_train['params'].get("seed", -1), cfg_train['params'].get("torch_deterministic", False))
 

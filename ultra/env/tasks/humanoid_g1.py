@@ -63,7 +63,7 @@ class Humanoid_G1(Humanoid_SMPLX):
         asset_options.vhacd_params.max_convex_hulls = 5
         asset_options.vhacd_params.max_num_vertices_per_ch = 16
         asset_options.vhacd_params.resolution = 60000
-        asset_options.default_dof_drive_mode = gymapi.DOF_MODE_EFFORT
+        asset_options.default_dof_drive_mode = (gymapi.DOF_MODE_POS if self.cfg["env"].get("retargetPositionControl", False) else gymapi.DOF_MODE_EFFORT)
 
         humanoid_asset = self.gym.load_asset(self.sim, asset_root, asset_file, asset_options)
         right_foot_idx = self.gym.find_asset_rigid_body_index(humanoid_asset, "right_ankle_roll_link")
@@ -205,7 +205,7 @@ class Humanoid_G1(Humanoid_SMPLX):
 
         if (self._pd_control):
             dof_prop = self.gym.get_asset_dof_properties(humanoid_asset)
-            dof_prop["driveMode"] = gymapi.DOF_MODE_EFFORT 
+            dof_prop["driveMode"] = (gymapi.DOF_MODE_POS if self.cfg["env"].get("retargetPositionControl", False) else gymapi.DOF_MODE_EFFORT)
             # stiffness = [
             #     150, 150, 
             #     200, 200,
@@ -255,6 +255,9 @@ class Humanoid_G1(Humanoid_SMPLX):
                     25.0, 25.0, 25.0, 25.0, 25.0, 5.0, 5.0]
             action_scale = [e/k for e, k in zip(effort, stiffness)]
             dof_prop["effort"] = effort
+            if self.cfg["env"].get("retargetPositionControl", False):
+                dof_prop["stiffness"] = stiffness
+                dof_prop["damping"] = damping
             # dof_armature_29 = [0.0103, 0.0251, 0.0103, 0.0251, 0.003597, 0.003597] * 2 + [0.0103] * 3 + [0.003597] * 14       # 8 (original small joints) + 4 (extra wrist DoF)
             dof_prop["armature"] = armature
             self.gym.set_actor_dof_properties(env_ptr, humanoid_handle, dof_prop)

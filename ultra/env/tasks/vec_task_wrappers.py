@@ -69,16 +69,9 @@ class VecTaskDAggerWrapper(VecTaskPythonWrapper):
         # self._amp_obs_space = spaces.Box(np.ones(task.get_num_amp_obs()+2) * -np.Inf, np.ones(task.get_num_amp_obs()+2) * np.Inf)
         return
     
-    def reset(self):
-        actions = 0.01 * (1 - 2 * torch.rand([self.task.num_envs, self.task.num_actions], dtype=torch.float32, device=self.rl_device))
-
-        # step the simulator
-        self.task.step(actions)
-        curr_obs = ((self.task.obs_buf - self.task.running_mean.float().to(self.task.device)) / torch.sqrt(self.task.running_var.float().to(self.task.device) + 1e-05))
-        curr_obs = torch.clamp(curr_obs, min=-5.0, max=5.0)
-        return torch.clamp(self.task.obs_buf_student, -self.clip_obs, self.clip_obs).to(self.rl_device), {'actions': self.task.action_buf, 'mus': self.task.mu_buf, 'teacher_obs': curr_obs}
-    
     def reset(self, env_ids=None):
+        if isinstance(env_ids, torch.Tensor):
+            env_ids = env_ids.to(self.task.device)
         self.task.reset(env_ids)
         curr_obs = ((self.task.obs_buf - self.task.running_mean.float().to(self.task.device)) / torch.sqrt(self.task.running_var.float().to(self.task.device) + 1e-05))
         curr_obs = torch.clamp(curr_obs, min=-5.0, max=5.0)
@@ -89,4 +82,6 @@ class VecTaskDAggerWrapper(VecTaskPythonWrapper):
 
         self.task.step(actions_tensor)
 
-        return torch.clamp(self.task.obs_buf_student, -self.clip_obs, self.clip_obs).to(self.rl_device), self.task.rew_buf.to(self.rl_device), self.task.reset_buf.to(self.rl_device), self.task.extras, {'actions': self.task.action_buf, 'mus': self.task.mu_buf}
+        curr_obs = ((self.task.obs_buf - self.task.running_mean.float().to(self.task.device)) / torch.sqrt(self.task.running_var.float().to(self.task.device) + 1e-05))
+        curr_obs = torch.clamp(curr_obs, min=-5.0, max=5.0)
+        return torch.clamp(self.task.obs_buf_student, -self.clip_obs, self.clip_obs).to(self.rl_device), self.task.rew_buf.to(self.rl_device), self.task.reset_buf.to(self.rl_device), self.task.extras, {'actions': self.task.action_buf, 'mus': self.task.mu_buf, 'teacher_obs': curr_obs}
