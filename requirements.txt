@@ -1,12 +1,11 @@
-# Core (IsaacGym Preview 4 must be installed separately, see docs/install.md)
-torch>=2.0
-# IsaacGym Preview 4 still uses the removed np.float alias -> numpy must be < 1.24
-numpy>=1.21,<1.24
+# Core. Isaac Sim 5.1, Isaac Lab 2.3.x (fork), torch 2.7.0+cu128 and rl-games are installed
+# separately, see docs/install.md. Do not add torch/torchvision here: Isaac Sim pins torch 2.7.0 and
+# RTX 50xx (Blackwell, sm_120) GPUs need the cu128 build.
+# Isaac Sim 5.1 requires numpy 1.26.x
+numpy>=1.26,<2
 pyyaml
-rl-games==1.1.4
 tensorboard
 tensorboardX
-protobuf==3.20.*
 trimesh
 scipy
 tqdm
@@ -14,10 +13,12 @@ imageio[ffmpeg]
 opencv-python
 pillow
 psutil
-gym
+# gymnasium is installed by Isaac Lab; listed so the dependency is explicit.
+# The legacy `gym` package (used for rl-games observation/action spaces) comes with the Isaac Lab rl_games extra.
+gymnasium
 
 # MuJoCo sim2sim
-mujoco>=3.0
+mujoco>=3.3
 
 # Optional: experiment logging (disable with WANDB_DISABLED=true)
 wandb

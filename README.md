@@ -38,8 +38,9 @@
 
 ## ⚙️ Installation
 
-See [docs/install.md](docs/install.md): Python 3.8, `pip install -r requirements.txt`, IsaacGym Preview 4, and
-`mujoco` for sim2sim. Run every command below from the repository root.
+See [docs/install.md](docs/install.md): Python 3.11, Isaac Sim 5.1, Isaac Lab 2.3.x (fork, which also provides
+rl-games), PyTorch 2.7.0 + CUDA 12.8 (required for RTX 50xx GPUs), `pip install -r requirements.txt`, and `mujoco` for
+sim2sim. Run every command below from the repository root.
 
 ## 📦 Data
 
@@ -160,7 +161,7 @@ The command writes `output/teacher_inference/rollout.pt` with observed/reference
 ### 🤖 Student
 
 ```bash
-scripts/play_student.sh <student.pth> 1 full_track      # IsaacGym playback (also: sparse_track, object_obs points)
+scripts/play_student.sh <student.pth> 1 full_track      # Isaac Lab playback (also: sparse_track, object_obs points)
 scripts/sim2sim_student.sh <student.pth> InterAct/OMOMO_retarget_aug full_track   # MuJoCo
 scripts/export_jit.sh <student.pth> student_jit.pt      # TorchScript export
 ```

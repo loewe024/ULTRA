@@ -40,3 +40,4 @@ ultra/data/videos/
 __MACOSX/
 *slurm*
 *.script
+ultra/data/assets/usd/
