@@ -8,7 +8,6 @@ import sys
 repo = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(repo / "ultra"))
 
-import isaacgym  # noqa: F401; Isaac Gym must be imported before torch.
 import torch
 from learning import ultra_players
 

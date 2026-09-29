@@ -40,7 +40,6 @@ import matplotlib.cm as cm
 # ---------- project imports (run from the repository root) ----------
 import mujoco
 import trimesh
-from rl_games.algos_torch import torch_ext
 from learning import ultra_network_builder_obj_v2, ultra_models
 from utils.obs_vae import MujocoObs, compute_sdf
 from utils import torch_utils_mujoco
@@ -176,10 +175,11 @@ def load_model(ckpt_path, device="cuda", goal_phase_dim=4):
     network_params = _load_network_config_from_yaml()
     network.load(network_params)
     network = ultra_models.ModelUltraContinuous(network)
-    ck = torch_ext.load_checkpoint(ckpt_path)
+    ck = ultra_models.load_checkpoint(ckpt_path)
     policy = network.build(config)
     policy.to(device)
-    policy.load_state_dict(ck["model"], strict=False)
+    state = {k: v for k, v in ck["model"].items() if not k.startswith(("running_mean_std.", "value_mean_std."))}
+    policy.load_state_dict(state, strict=False)
     policy.eval()
     return policy
 

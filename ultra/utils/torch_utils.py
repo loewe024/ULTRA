@@ -28,7 +28,7 @@
 
 import torch
 
-from isaacgym.torch_utils import *
+from utils.gym_torch_utils import *
 
 @torch.jit.script
 def quat_angle_axis(x):

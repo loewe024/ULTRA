@@ -11,7 +11,7 @@ env:
   initVel: False
   moreRigid: False
   pdControl: True
-  retargetPositionControl: True # use Isaac Gym position targets only for UltraG1 retargeting
+  retargetPositionControl: True # use simulator position targets (implicit PD) only for UltraG1 retargeting
   powerScale: 1.0
   controlFrequencyInv: 17 # 17 x 1 ms physics steps per policy step (~60 Hz); one reference frame per step
   stateInit: "Start" #Random
@@ -153,7 +153,7 @@ noise:
       root_pos: 0.02
 
 control:
-  # NOTE: only stiffness/damping below are legacy and NOT used (gains are hard-coded in env/tasks/humanoid_g1.py);
+  # NOTE: only stiffness/damping below are legacy and NOT used (gains are defined in isaac/legacy_layout.py);
   # action_scale and control_type ARE read by Humanoid_SMPLX._compute_torques.
   stiffness: {
             "hip_yaw": 150,

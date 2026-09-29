@@ -3,7 +3,7 @@ import numpy as np
 import torch
 import torch.nn as nn
 
-from learning import network_builder
+from rl_games.algos_torch import network_builder
 
 
 class PositionalEncoding(nn.Module):

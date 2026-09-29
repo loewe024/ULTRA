@@ -27,19 +27,21 @@
 # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 from rl_games.algos_torch import torch_ext
-from learning import a2c_common
-from isaacgym.torch_utils import *
+from rl_games.common import a2c_common
+from utils.gym_torch_utils import *
 
 import numpy as np
 import torch
 from torch import nn
 import math
 import learning.ultra_agent as ultra_agent
+from learning.ultra_models import load_checkpoint
 
 
 class UltraAgentDistill(ultra_agent.UltraAgent):
-    def __init__(self, base_name, config):
-        super().__init__(base_name, config)
+    def __init__(self, base_name, params):
+        config = params['config']
+        super().__init__(base_name, params)
         self.two_stage_gradients = config.get('two_stage_gradients', False)
         self.epoch_num_start = 0
         self.expert_loss_coef = config['expert_loss_coef']
@@ -240,9 +242,6 @@ class UltraAgentDistill(ultra_agent.UltraAgent):
                 value = self.get_central_value(input_dict)
                 res_dict['values'] = value
 
-        if self.normalize_value:
-            res_dict['values'] = self.value_mean_std(res_dict['values'], True)
-            res_dict_prior['values'] = self.value_mean_std(res_dict_prior['values'], True)
 
         # Store prior_mask in result
         res_dict['prior_mask'] = self.prior_mask.float()
@@ -389,21 +388,19 @@ class UltraAgentDistill(ultra_agent.UltraAgent):
             - 1
         )
 
-    def restore(self, fn):
-        checkpoint = torch_ext.load_checkpoint(fn)
+    def restore(self, fn, set_epoch=True):
+        checkpoint = load_checkpoint(fn)
         current = self.model.state_dict()
         saved = checkpoint['model']
         compatible = current.keys() == saved.keys() and all(current[key].shape == value.shape for key, value in saved.items())
         if compatible:
-            super().restore(fn)
+            super().restore(fn, set_epoch=set_epoch)
         else:
             weights = {key: value for key, value in saved.items()
                        if key in current and current[key].shape == value.shape
                        and not (self.config.get('allow_critic_mismatch', False)
                                 and ('.critic' in key or '.value' in key))}
             self.model.load_state_dict(weights, strict=False)
-            if self.normalize_input and 'running_mean_std' in checkpoint:
-                self.running_mean_std.load_state_dict(checkpoint['running_mean_std'])
             if self._normalize_input and 'amp_input_mean_std' in checkpoint:
                 self._input_mean_std.load_state_dict(checkpoint['amp_input_mean_std'])
             self.epoch_num = checkpoint.get('epoch', 0)
@@ -586,9 +583,9 @@ class UltraAgentDistill(ultra_agent.UltraAgent):
         if self.is_rnn:
             rnn_masks = input_dict['rnn_masks']
             batch_dict['rnn_states'] = input_dict['rnn_states']
-            batch_dict['seq_length'] = self.seq_len
+            batch_dict['seq_length'] = self.seq_length
 
-        with torch.cuda.amp.autocast(enabled=self.mixed_precision):
+        with torch.amp.autocast("cuda", enabled=self.mixed_precision):
             res_dict = self.model(batch_dict)
             res_dict_prior = self.model(batch_dict_prior)
 
@@ -706,7 +703,7 @@ class UltraAgentDistill(ultra_agent.UltraAgent):
             self._set_requires_grad(distill_only, False)
             self._set_requires_grad(shared, True)
             self._set_requires_grad(ppo_only, True)
-            with torch.cuda.amp.autocast(enabled=self.mixed_precision):
+            with torch.amp.autocast("cuda", enabled=self.mixed_precision):
                 res_dict = self.model(batch_dict)
                 res_dict_prior = self.model(batch_dict_prior)
 
@@ -744,12 +741,8 @@ class UltraAgentDistill(ultra_agent.UltraAgent):
                 ]
                 if unused:
                     print("[UltraAgentDistill] Unused params:", unused)
-        if self.truncate_grads:
-            self.scaler.unscale_(self.optimizer)
-            nn.utils.clip_grad_norm_(self.model.parameters(), self.grad_norm)
-
-        self.scaler.step(self.optimizer)
-        self.scaler.update()
+        # averages the gradients over the ranks in multi-GPU mode, then clips (truncate_grads) and steps
+        self.trancate_gradients_and_step()
         with torch.no_grad():
             reduce_kl = not self.is_rnn
             kl_dist = torch_ext.policy_kl(mu.detach(), sigma.detach(), old_mu_batch, old_sigma_batch, reduce_kl)
@@ -788,7 +781,7 @@ class UltraAgentDistill(ultra_agent.UltraAgent):
                 dtype=torch.float32,
             )
         if isinstance(obs_dict, dict) and 'teacher_obs' in obs_dict:
-            processed_obs = self._preproc_obs(obs_dict['obs'])
+            processed_obs = self.model.norm_obs(self._preproc_obs(obs_dict['obs']))
             value = self.model.a2c_network.eval_critic({'obs': processed_obs, 'teacher_obs': obs_dict['teacher_obs']})
             if self.normalize_value:
                 value = self.value_mean_std(value, True)

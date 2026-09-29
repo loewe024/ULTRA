@@ -51,6 +51,12 @@ MASSLESS_LINK_INERTIA = 1e-6
 G1_DECOMPOSITION = dict(max_convex_hulls=5, hull_vertex_limit=16, voxel_resolution=60000)
 # IsaacGym VHACD settings of the objects (Ultra._load_target_asset); keyed by the hull budget.
 OBJECT_DECOMPOSITION = {n: dict(max_convex_hulls=n, hull_vertex_limit=64, voxel_resolution=300000) for n in (5, 10)}
+# Collision offsets of the ``sim.physx`` block of all ULTRA task configs. They are baked into the USD because the
+# G1 colliders are instanced and cannot be modified when spawning.
+CONTACT_OFFSET = 0.02
+REST_OFFSET = 0.0
+# Default object density (``env.objectDensity``); the environment re-applies the configured value when spawning.
+OBJECT_DENSITY = 25.0
 
 
 def leg_filter(link_name):
@@ -66,6 +72,12 @@ def set_decomposition(prim, max_convex_hulls, hull_vertex_limit, voxel_resolutio
     api.CreateMaxConvexHullsAttr().Set(max_convex_hulls)
     api.CreateHullVertexLimitAttr().Set(hull_vertex_limit)
     api.CreateVoxelResolutionAttr().Set(voxel_resolution)
+
+
+def set_collision_offsets(prim):
+    api = PhysxSchema.PhysxCollisionAPI.Apply(prim)
+    api.CreateContactOffsetAttr().Set(CONTACT_OFFSET)
+    api.CreateRestOffsetAttr().Set(REST_OFFSET)
 
 
 def postprocess_g1(usd_path, urdf_path):
@@ -90,6 +102,8 @@ def postprocess_g1(usd_path, urdf_path):
     physics_stage = Usd.Stage.Open(physics_path)
     num_colliders = 0
     for prim in physics_stage.Traverse():
+        if prim.HasAPI(UsdPhysics.CollisionAPI):
+            set_collision_offsets(prim)
         if prim.HasAPI(UsdPhysics.MeshCollisionAPI):
             set_decomposition(prim, **G1_DECOMPOSITION)
             num_colliders += 1
@@ -139,7 +153,10 @@ def convert_objects(force):
                 usd_dir=os.path.join(USD_ROOT, "objects", name),
                 usd_file_name=f"{name}_h{hulls}.usd",
                 rigid_props=sim_utils.RigidBodyPropertiesCfg(),
-                collision_props=sim_utils.CollisionPropertiesCfg(collision_enabled=True),
+                mass_props=sim_utils.MassPropertiesCfg(density=OBJECT_DENSITY),
+                collision_props=sim_utils.CollisionPropertiesCfg(
+                    collision_enabled=True, contact_offset=CONTACT_OFFSET, rest_offset=REST_OFFSET
+                ),
                 mesh_collision_props=sim_utils.ConvexDecompositionPropertiesCfg(**decomposition),
                 make_instanceable=False,
                 force_usd_conversion=force,

@@ -1,8 +1,7 @@
 import torch
 from pathlib import Path
 
-from isaacgym import gymtorch
-from isaacgym.torch_utils import *
+from utils.gym_torch_utils import *
 
 from utils import torch_utils
 import torch.nn.functional as F
@@ -12,13 +11,8 @@ from env.tasks.ultra import Ultra
 
 class UltraG1(Humanoid_G1, Ultra):
 
-    def __init__(self, cfg, sim_params, physics_engine, device_type, device_id, headless):
-        super().__init__(cfg=cfg,
-                         sim_params=sim_params,
-                         physics_engine=physics_engine,
-                         device_type=device_type,
-                         device_id=device_id,
-                         headless=headless)
+    def __init__(self, cfg, render_mode=None, **kwargs):
+        super().__init__(cfg, render_mode, **kwargs)
         self.scaling = cfg['env']['scaling']
         self.init_root_height = cfg['env']['initRootHeight']
         self.init_dof = torch.cat([to_torch([-0.1, 0, 0.0, 0.3, -0.2, 0, -0.1, 0, 0.0, 0.3, -0.2, 0, 0, 0, 0, 
@@ -212,18 +206,11 @@ class UltraG1(Humanoid_G1, Ultra):
         return
 
 
-    def _create_envs(self, num_envs, spacing, num_per_row):
-
-        self._target_handles = []
+    def _setup_env_properties(self):
         self._load_target_asset()
-        super()._create_envs(num_envs, spacing, num_per_row)
+        super()._setup_env_properties()
+        self._setup_target_properties()
         return
-
-    def _build_env(self, env_id, env_ptr, humanoid_asset):
-        super()._build_env(env_id, env_ptr, humanoid_asset)
-
-        self._build_target(env_id, env_ptr)
-        return   
 
     def _reset_target(self, env_ids):
         super()._reset_target(env_ids)
@@ -236,8 +223,7 @@ class UltraG1(Humanoid_G1, Ultra):
 
 
         env_ids_int32 = self._tar_actor_ids[env_ids]
-        self.gym.set_actor_root_state_tensor_indexed(self.sim, gymtorch.unwrap_tensor(self._root_states),
-                                                    gymtorch.unwrap_tensor(env_ids_int32), len(env_ids_int32))
+        self._set_actor_root_state_indexed(env_ids_int32)
     
         return
 

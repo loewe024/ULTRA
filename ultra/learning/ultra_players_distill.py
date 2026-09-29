@@ -39,8 +39,8 @@ class UltraPlayerContinuousDistill(ultra_players.UltraPlayerContinuous):
     so the latent does not jitter from step to step.
     """
 
-    def __init__(self, config):
-        super().__init__(config)
+    def __init__(self, params):
+        super().__init__(params)
         self._last_expert = None
         self._vae_noise = None
         return
@@ -83,7 +83,7 @@ class UltraPlayerContinuousDistill(ultra_players.UltraPlayerContinuous):
                 dones = np.expand_dims(np.asarray(dones), 0)
             return self.obs_to_torch(obs), torch.from_numpy(rewards), torch.from_numpy(dones), infos
 
-    def get_action(self, obs_dict, is_determenistic=False):
+    def get_action(self, obs_dict, is_deterministic=False):
         obs = obs_dict['obs']
         obs = self._preproc_obs(obs)
 
@@ -108,5 +108,5 @@ class UltraPlayerContinuousDistill(ultra_players.UltraPlayerContinuous):
         with torch.no_grad():
             res_dict = self.model(input_dict)
 
-        action = res_dict['mus'] if is_determenistic else res_dict['actions']
+        action = res_dict['mus'] if is_deterministic else res_dict['actions']
         return torch.clamp(action, -1.0, 1.0)

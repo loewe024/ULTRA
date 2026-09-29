@@ -40,7 +40,8 @@
 
 See [docs/install.md](docs/install.md): Python 3.11, Isaac Sim 5.1, Isaac Lab 2.3.x (fork, which also provides
 rl-games), PyTorch 2.7.0 + CUDA 12.8 (required for RTX 50xx GPUs), `pip install -r requirements.txt`, and `mujoco` for
-sim2sim. Run every command below from the repository root.
+sim2sim. Convert the assets to USD once with `python scripts/convert_assets.py`. Run every command below from the
+repository root; on a 16 GB GPU add `--num_envs 2048` to the training commands.
 
 ## 📦 Data
 
@@ -169,8 +170,8 @@ scripts/export_jit.sh <student.pth> student_jit.pt      # TorchScript export
 ## 📄 License
 
 ULTRA's own code is released under Apache-2.0 (top-level `LICENSE`); the InterMimic-derived simulation and learning
-stack is under MIT (`LICENSE-InterMimic`). `ultra/env/tasks/base_task.py` and `vec_task.py` are adapted from
-NVIDIA's IsaacGym examples and keep NVIDIA's header. Robot assets are from Unitree; motion data derives from OMOMO
+stack is under MIT (`LICENSE-InterMimic`). `ultra/utils/gym_torch_utils.py` reproduces NVIDIA's IsaacGym torch
+helpers and keeps NVIDIA's header. Robot assets are from Unitree; motion data derives from OMOMO
 through InterAct.
 
 ## 📖 Citation

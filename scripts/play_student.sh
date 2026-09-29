@@ -1,5 +1,5 @@
 #!/bin/bash
-# Roll out the VAE student in the IsaacGym viewer under one observation preset.
+# Roll out the VAE student in the Isaac Lab viewer under one observation preset.
 # Usage: scripts/play_student.sh <ckpt.pth> [num_envs] [task_mode] [obj_obs] [extra run_distill.py args...]
 #   task_mode: full_track | sparse_track | object_obs   (omit or "" for training-style random masks)
 #   obj_obs  : points | pos | none                       (only used with object_obs)

@@ -29,14 +29,11 @@
 import os
 import yaml
 
-from isaacgym import gymapi
-from isaacgym import gymutil
+import argparse
 
 import numpy as np
 import random
 import torch
-
-SIM_TIMESTEP = 1.0 / 1000.0
 
 def set_np_formatting():
     np.set_printoptions(edgeitems=30, infstr='inf',
@@ -68,7 +65,7 @@ def set_seed(seed, torch_deterministic=False):
         os.environ['CUBLAS_WORKSPACE_CONFIG'] = ':4096:8'
         torch.backends.cudnn.benchmark = False
         torch.backends.cudnn.deterministic = True
-        torch.set_deterministic(True)
+        torch.use_deterministic_algorithms(True)
     else:
         torch.backends.cudnn.benchmark = True
         torch.backends.cudnn.deterministic = False
@@ -111,7 +108,7 @@ def load_cfg(args):
 
     if args.experiment != 'Base':
         if args.metadata:
-            exp_name = "{}_{}_{}_{}".format(args.experiment, args.task_type, args.device, str(args.physics_engine).split("_")[-1])
+            exp_name = "{}_{}_{}".format(args.experiment, args.task_type, args.device)
 
             if cfg["task"]["randomize"]:
                 exp_name += "_DR"
@@ -147,42 +144,7 @@ def load_cfg(args):
     return cfg, cfg_train, logdir
 
 
-def parse_sim_params(args, cfg, cfg_train):
-    # initialize sim
-    sim_params = gymapi.SimParams()
-    sim_params.dt = SIM_TIMESTEP
-    sim_params.num_client_threads = args.slices
-
-    if args.physics_engine == gymapi.SIM_FLEX:
-        if args.device != "cpu":
-            print("WARNING: Using Flex with GPU instead of PHYSX!")
-        sim_params.flex.shape_collision_margin = 0.01
-        sim_params.flex.num_outer_iterations = 4
-        sim_params.flex.num_inner_iterations = 10
-    elif args.physics_engine == gymapi.SIM_PHYSX:
-        sim_params.physx.solver_type = 1
-        sim_params.physx.num_position_iterations = 4
-        sim_params.physx.num_velocity_iterations = 0
-        sim_params.physx.num_threads = 4
-        sim_params.physx.use_gpu = args.use_gpu
-        sim_params.physx.num_subscenes = args.subscenes
-        sim_params.physx.max_gpu_contact_pairs = 8 * 1024 * 1024
-
-    sim_params.use_gpu_pipeline = args.use_gpu_pipeline
-    sim_params.physx.use_gpu = args.use_gpu
-
-    # if sim options are provided in cfg, parse them and update/override above:
-    if "sim" in cfg:
-        gymutil.parse_sim_config(cfg["sim"], sim_params)
-
-    # Override num_threads if passed on the command line
-    if args.physics_engine == gymapi.SIM_PHYSX and args.num_threads > 0:
-        sim_params.physx.num_threads = args.num_threads
-
-    return sim_params
-
-
-def get_args(benchmark=False):
+def get_args_parser(benchmark=False):
     custom_parameters = [
         {"name": "--test", "action": "store_true", "default": False,
             "help": "Run trained policy, no training"},
@@ -194,10 +156,8 @@ def get_args(benchmark=False):
             "help": "Path to the saved weights, only for rl_games RL library"},
         {"name": "--resume_from", "type": str, "default": "",
             "help": "Initialize training from a student checkpoint"},
-        {"name": "--headless", "action": "store_true", "default": False,
-            "help": "Force display off at all times"},
         {"name": "--multi_gpu", "action": "store_true", "default": False,
-            "help": "Enable torch.distributed (DDP) multi-GPU training; launch with torchrun (see scripts/train_student_multigpu.sh)"},
+            "help": "Enable torch.distributed multi-GPU training; launch with torchrun (see scripts/train_student_multigpu.sh)"},
         {"name": "--task", "type": str, "default": "Humanoid",
             "help": "Can be BallBalance, Cartpole, CartpoleYUp, Ant, Humanoid, Anymal, FrankaCabinet, Quadcopter, ShadowHand, Ingenuity"},
         {"name": "--projtype", "type": str, "default": "None",
@@ -264,15 +224,15 @@ def get_args(benchmark=False):
                                   "help": "Number of timing reports"},
                               {"name": "--bench_file", "action": "store", "help": "Filename to store benchmark results"}]
 
-    # parse arguments
-    args = gymutil.parse_arguments(
-        description="RL Policy",
-        custom_parameters=custom_parameters)
+    parser = argparse.ArgumentParser(description="RL Policy")
+    for param in custom_parameters:
+        kwargs = {k: v for k, v in param.items() if k != "name"}
+        parser.add_argument(param["name"], **kwargs)
+    return parser
 
-    # allignment with examples
-    args.device_id = args.compute_device_id
-    args.device = args.sim_device_type if args.use_gpu_pipeline else 'cpu'
 
+def finalize_args(args):
+    """Derive the legacy train/play flags after parsing (``get_args_parser`` + Isaac Lab AppLauncher args)."""
     if args.test:
         args.play = args.test
         args.train = False

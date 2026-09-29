@@ -19,7 +19,6 @@ from tqdm import tqdm
 from collections import deque
 from scipy.spatial.transform import Rotation as R
 
-from rl_games.algos_torch import torch_ext
 from learning import ultra_network_builder_obj_v2, ultra_models
 import torch
 import trimesh
@@ -708,10 +707,10 @@ class HumanoidEnv:
             network_params = _load_network_config_from_yaml()
             network.load(network_params)
             network = ultra_models.ModelUltraContinuous(network)
-            ck = torch_ext.load_checkpoint(self.policy_path)
+            ck = ultra_models.load_checkpoint(self.policy_path)
             policy = network.build(config)
             policy.to(self.device)
-            policy.load_state_dict(ck['model'])
+            ultra_models.load_model_state(policy, ck)
             self.policy = policy
             self.running_mean = None
             self.running_var = None

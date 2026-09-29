@@ -30,20 +30,21 @@ import torch, time
 
 from rl_games.algos_torch import players
 from rl_games.algos_torch import torch_ext
-from rl_games.algos_torch.running_mean_std import RunningMeanStd
+from learning.ultra_models import load_checkpoint, load_model_state
 from rl_games.common.player import BasePlayer
 
 import numpy as np
 
 class CommonPlayer(players.PpoPlayerContinuous):
-    def __init__(self, config):
-        BasePlayer.__init__(self, config)
-        self.network = config['network']
+    def __init__(self, params):
+        BasePlayer.__init__(self, params)
+        self.network = self.config['network']
         
         self._setup_action_space()
         self.mask = [False]
 
         self.normalize_input = self.config['normalize_input']
+        self.normalize_value = self.config.get('normalize_value', False)
 
         net_config = self._build_net_config()
         self._build_net(net_config)   
@@ -54,7 +55,7 @@ class CommonPlayer(players.PpoPlayerContinuous):
         n_games = self.games_num
         render = self.render_env
         n_game_life = self.n_game_life
-        is_determenistic = self.is_determenistic
+        is_deterministic = self.is_deterministic
         sum_rewards = 0
         sum_steps = 0
         sum_game_res = 0
@@ -95,9 +96,9 @@ class CommonPlayer(players.PpoPlayerContinuous):
 
                 if has_masks:
                     masks = self.env.get_action_mask()
-                    action = self.get_masked_action(obs_dict, masks, is_determenistic)
+                    action = self.get_masked_action(obs_dict, masks, is_deterministic)
                 else:
-                    action = self.get_action(obs_dict, is_determenistic)
+                    action = self.get_action(obs_dict, is_deterministic)
                 obs_dict, r, done, info =  self.env_step(self.env, action)
                 cr += r
                 steps += 1
@@ -150,8 +151,8 @@ class CommonPlayer(players.PpoPlayerContinuous):
         }
         return obs_dict
 
-    def get_action(self, obs_dict, is_determenistic = False):
-        output = super().get_action(obs_dict['obs'], is_determenistic)
+    def get_action(self, obs_dict, is_deterministic = False):
+        output = super().get_action(obs_dict['obs'], is_deterministic)
         return output
 
     def env_step(self, env, actions):
@@ -176,10 +177,14 @@ class CommonPlayer(players.PpoPlayerContinuous):
         self.model.to(self.device)
         self.model.eval()
         self.is_rnn = self.model.is_rnn()
-        if self.normalize_input:
-            obs_shape = torch_ext.shape_whc_to_cwh(self.obs_shape)
-            self.running_mean_std = RunningMeanStd(obs_shape).to(self.device)
-            self.running_mean_std.eval() 
+        return
+
+    def restore(self, fn):
+        checkpoint = load_checkpoint(fn)
+        load_model_state(self.model, checkpoint)
+        env_state = checkpoint.get('env_state', None)
+        if self.env is not None and env_state is not None:
+            self.env.set_env_state(env_state)
         return
 
     def env_reset(self, env_ids=None):
@@ -190,11 +195,13 @@ class CommonPlayer(players.PpoPlayerContinuous):
         return
 
     def _build_net_config(self):
-        obs_shape = torch_ext.shape_whc_to_cwh(self.obs_shape)
         config = {
             'actions_num' : self.actions_num,
-            'input_shape' : obs_shape,
-            'num_seqs' : self.num_agents
+            'input_shape' : self.obs_shape,
+            'num_seqs' : self.num_agents,
+            'value_size': self.env_info.get('value_size', 1),
+            'normalize_value': self.normalize_value,
+            'normalize_input': self.normalize_input,
         } 
         return config
 

@@ -32,19 +32,20 @@ from rl_games.algos_torch import torch_ext
 from rl_games.algos_torch.running_mean_std import RunningMeanStd
 import numpy as np
 import learning.common_player as common_player
+from learning.ultra_models import load_checkpoint
 
 class UltraPlayerContinuous(common_player.CommonPlayer):
-    def __init__(self, config):
-        self._normalize_amp_input = config.get('normalize_amp_input', True)
+    def __init__(self, params):
+        self._normalize_amp_input = params['config'].get('normalize_amp_input', True)
         
-        super().__init__(config)
+        super().__init__(params)
         return
 
     def run(self):
         n_games = self.games_num
         render = self.render_env
         n_game_life = self.n_game_life
-        is_determenistic = self.is_determenistic
+        is_deterministic = self.is_deterministic
         sum_rewards = 0
         sum_steps = 0
         sum_game_res = 0
@@ -119,9 +120,9 @@ class UltraPlayerContinuous(common_player.CommonPlayer):
 
                     if has_masks:
                         masks = self.env.get_action_mask()
-                        action = self.get_masked_action(obs_dict, masks, is_determenistic)
+                        action = self.get_masked_action(obs_dict, masks, is_deterministic)
                     else:
-                        action = self.get_action(obs_dict, is_determenistic)
+                        action = self.get_action(obs_dict, is_deterministic)
                     # print("Dof_Velocity: ", self.env.task._dof_vel[0])
                     # Calculate accelerations based on velocity differences and dt
                     if n == 0:
@@ -206,7 +207,7 @@ class UltraPlayerContinuous(common_player.CommonPlayer):
         if (fn != 'Base'):
             super().restore(fn)
             if self._normalize_amp_input:
-                checkpoint = torch_ext.load_checkpoint(fn)
+                checkpoint = load_checkpoint(fn)
                 # Student checkpoints trained with normalize_input: False carry no AMP input statistics.
                 if 'amp_input_mean_std' in checkpoint:
                     self._amp_input_mean_std.load_state_dict(checkpoint['amp_input_mean_std'])

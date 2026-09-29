@@ -1,23 +1,18 @@
 import torch
 import os
 
-from isaacgym import gymapi
-from isaacgym.torch_utils import *
+from utils.gym_torch_utils import *
 import torch.nn.functional as F
 from utils import torch_utils
 from env.tasks.humanoid import *
+from isaac.legacy_layout import G1_DAMPING, G1_EFFORT, G1_STIFFNESS
 
 
 class Humanoid_G1(Humanoid_SMPLX):
-    def __init__(self, cfg, sim_params, physics_engine, device_type, device_id, headless):
-        self._key_body_ids_gt = to_torch(cfg["env"]["keyIndex"], device="cuda:"+str(device_id), dtype=torch.long)
-        self._contact_body_ids_gt = to_torch(cfg["env"]["contactIndex"], device="cuda:"+str(device_id), dtype=torch.long)
-        super().__init__(cfg=cfg,
-                         sim_params=sim_params,
-                         physics_engine=physics_engine,
-                         device_type=device_type,
-                         device_id=device_id,
-                         headless=headless)
+    def __init__(self, cfg, render_mode=None, **kwargs):
+        self._key_body_ids_gt = to_torch(cfg["env"]["keyIndex"], device=cfg.sim.device, dtype=torch.long)
+        self._contact_body_ids_gt = to_torch(cfg["env"]["contactIndex"], device=cfg.sim.device, dtype=torch.long)
+        super().__init__(cfg, render_mode, **kwargs)
         self.last_actions = torch.zeros((self.num_envs, 29), device=self.device, dtype=torch.float)
         self.last_dof_vel = torch.zeros((self.num_envs, 29), device=self.device, dtype=torch.float)
         self.actions = torch.zeros((self.num_envs, 29), device=self.device, dtype=torch.float)
@@ -47,43 +42,23 @@ class Humanoid_G1(Humanoid_SMPLX):
         self._termination_heights_init = to_torch(self._termination_heights_init, device=self.device)
         return
     
-    def _create_envs(self, num_envs, spacing, num_per_row):
-        lower = gymapi.Vec3(-spacing, -spacing, 0.0)
-        upper = gymapi.Vec3(spacing, spacing, spacing)
-
-        asset_root = self.cfg["env"]["asset"]["assetRoot"]
-        asset_file = self.robot_type
-
-        asset_path = os.path.join(asset_root, asset_file)
-        asset_root = os.path.dirname(asset_path)
-        asset_file = os.path.basename(asset_path)
-
-        asset_options = gymapi.AssetOptions()
-        asset_options.vhacd_enabled = True
-        asset_options.vhacd_params.max_convex_hulls = 5
-        asset_options.vhacd_params.max_num_vertices_per_ch = 16
-        asset_options.vhacd_params.resolution = 60000
-        asset_options.default_dof_drive_mode = (gymapi.DOF_MODE_POS if self.cfg["env"].get("retargetPositionControl", False) else gymapi.DOF_MODE_EFFORT)
-
-        humanoid_asset = self.gym.load_asset(self.sim, asset_root, asset_file, asset_options)
-        right_foot_idx = self.gym.find_asset_rigid_body_index(humanoid_asset, "right_ankle_roll_link")
-        left_foot_idx = self.gym.find_asset_rigid_body_index(humanoid_asset, "left_ankle_roll_link")
+    def _setup_env_properties(self):
+        body_names = LEGACY_BODY_NAMES
+        right_foot_idx = self._find_body_index("right_ankle_roll_link")
+        left_foot_idx = self._find_body_index("left_ankle_roll_link")
         
         self.feet_indices = torch.zeros(
             2, dtype=torch.long, device=self.device, requires_grad=False
         )
         penalized_contact_names = []
         penalize_contacts_on = ["shoulder", "elbow", "hip"]
-        body_names = self.gym.get_asset_rigid_body_names(humanoid_asset)
         for name in penalize_contacts_on:
             penalized_contact_names.extend([s for s in body_names if name in s])
         self.penalized_contact_indices = torch.zeros(
             len(penalized_contact_names), dtype=torch.long, device=self.device, requires_grad=False
         )
         for i in range(len(penalized_contact_names)):
-            self.penalized_contact_indices[i] = self.gym.find_asset_rigid_body_index(
-                humanoid_asset, penalized_contact_names[i]
-            )
+            self.penalized_contact_indices[i] = self._find_body_index(penalized_contact_names[i])
         self.feet_indices[0] = left_foot_idx
         self.feet_indices[1] = right_foot_idx
         knee_names = [s for s in body_names if 'knee' in s]
@@ -91,221 +66,75 @@ class Humanoid_G1(Humanoid_SMPLX):
             len(knee_names), dtype=torch.long, device=self.device, requires_grad=False
         )
         for i in range(len(knee_names)):
-            self.knee_indices[i] = self.gym.find_asset_rigid_body_index(
-                humanoid_asset, knee_names[i]
-            )
-        self.num_humanoid_bodies = self.gym.get_asset_rigid_body_count(humanoid_asset)
-        self.num_humanoid_shapes = self.gym.get_asset_rigid_shape_count(humanoid_asset)
+            self.knee_indices[i] = self._find_body_index(knee_names[i])
+        self.num_humanoid_bodies = self.num_bodies
 
-        self.torso_idx = self.gym.find_asset_rigid_body_index(humanoid_asset, "torso_link")
-        
-        self.num_bodies = self.gym.get_asset_rigid_body_count(humanoid_asset)
-        self.num_dof = self.gym.get_asset_dof_count(humanoid_asset)
-        self.num_joints = self.gym.get_asset_joint_count(humanoid_asset)
+        self.torso_idx = self._find_body_index("torso_link")
 
-        self.humanoid_handles = []
-        self.envs = []
-        self.dof_limits_lower = []
-        self.dof_limits_upper = []
-
-        max_agg_bodies = self.num_humanoid_bodies + 2
-        max_agg_shapes = self.num_humanoid_shapes + 65
-        
-        for i in range(self.num_envs):
-            # create env instance
-            env_ptr = self.gym.create_env(self.sim, lower, upper, num_per_row)
-            self.gym.begin_aggregate(env_ptr, max_agg_bodies, max_agg_shapes, True)
-
-            self._build_env(i, env_ptr, humanoid_asset)
-
-            self.gym.end_aggregate(env_ptr)
-            self.envs.append(env_ptr)
-
-        dof_prop = self.gym.get_actor_dof_properties(self.envs[0], self.humanoid_handles[0])
-        for j in range(self.num_dof):
-            if dof_prop['lower'][j] > dof_prop['upper'][j]:
-                self.dof_limits_lower.append(dof_prop['upper'][j])
-                self.dof_limits_upper.append(dof_prop['lower'][j])
-            else:
-                self.dof_limits_lower.append(dof_prop['lower'][j])
-                self.dof_limits_upper.append(dof_prop['upper'][j])
-
-        self.dof_limits_lower = to_torch(self.dof_limits_lower, device=self.device)
-        self.dof_limits_upper = to_torch(self.dof_limits_upper, device=self.device)
+        lower, upper = self._dof_limits()
+        self.dof_limits_lower = torch.minimum(lower, upper)
+        self.dof_limits_upper = torch.maximum(lower, upper)
 
         if (self._pd_control):
             self._build_pd_action_offset_scale()
 
-        return
-    
-    def _process_rigid_shape_props(self, props, env_id):
-        """Callback allowing to store/change/randomize the rigid shape properties of each environment.
-            Called During environment creation.
-            Base behavior: randomizes the friction of each environment
-
-        Args:
-            props (List[gymapi.RigidShapeProperties]): Properties of each shape of the asset
-            env_id (int): Environment id
-
-        Returns:
-            [List[gymapi.RigidShapeProperties]]: Modified rigid shape properties
-        """
-        # NOTE: The default friction is all set to 1.0
-        if self.cfg['domain_rand']['randomize_friction'] and self.cfg['domain_rand']['domain_rand_general']:
-            if env_id == 0:
-                # prepare friction randomization
-                friction_range = self.cfg['domain_rand']['friction_range']
-                num_buckets = 64
-                bucket_ids = torch.randint(0, num_buckets, (self.num_envs, 1))
-                friction_buckets = torch_rand_float(
-                    friction_range[0], friction_range[1], (num_buckets, 1), device="cpu"
-                )
-                self.friction_coeffs = friction_buckets[bucket_ids]
-            for s in range(len(props)):
-                props[s].friction = self.friction_coeffs[env_id]
-        return props
-    
-    def _process_rigid_body_props(self, props, env_id):
-        # No need to use tensors as only called upon env creation
-        if self.cfg['domain_rand']['randomize_base_mass'] and self.cfg['domain_rand']['domain_rand_general']:
-            rng_mass = self.cfg['domain_rand']['added_mass_range']
-            rand_mass = np.random.uniform(rng_mass[0], rng_mass[1], size=(1,))
-            props[self.torso_idx].mass += rand_mass
-        else:
-            rand_mass = np.zeros((1,))
-        if self.cfg['domain_rand']['randomize_base_com'] and self.cfg['domain_rand']['domain_rand_general']:
-            rng_com = self.cfg['domain_rand']['added_com_range']
-            rand_com = np.random.uniform(rng_com[0], rng_com[1], size=(3,))
-            props[self.torso_idx].com += gymapi.Vec3(*rand_com)
-        else:
-            rand_com = np.zeros(3)
-        mass_params = np.concatenate([rand_mass, rand_com])
-        return props, mass_params
-        
-    def _build_env(self, env_id, env_ptr, humanoid_asset):
-        col_group = env_id
-        col_filter = self._get_humanoid_collision_filter()
-        segmentation_id = 0
-
-        start_pose = gymapi.Transform()
-        asset_file = self.robot_type
-        char_h = 0.89
-
-        start_pose.p = gymapi.Vec3(*get_axis_params(char_h, self.up_axis_idx))
-        start_pose.r = gymapi.Quat(0.0, 0.0, 0.0, 1.0)
-
-        rigid_shape_props_asset = self.gym.get_asset_rigid_shape_properties(humanoid_asset)
-        rigid_shape_props = self._process_rigid_shape_props(rigid_shape_props_asset, env_id)
-        self.gym.set_asset_rigid_shape_properties(humanoid_asset, rigid_shape_props)
-
-
-        humanoid_handle = self.gym.create_actor(env_ptr, humanoid_asset, start_pose, "humanoid", col_group, col_filter, segmentation_id)
-
-        self.gym.enable_actor_dof_force_sensors(env_ptr, humanoid_handle)
-
-        if (self._pd_control):
-            dof_prop = self.gym.get_asset_dof_properties(humanoid_asset)
-            dof_prop["driveMode"] = (gymapi.DOF_MODE_POS if self.cfg["env"].get("retargetPositionControl", False) else gymapi.DOF_MODE_EFFORT)
-            # stiffness = [
-            #     150, 150, 
-            #     200, 200,
-            #     20, 20,
-            #     150, 150,
-            #     200, 200,
-            #     20, 20,
-            #     200, 200, 200,
-            #     40 ,40 ,40 ,40, 20 ,20 ,20,
-            #     40 ,40 ,40 ,40, 20 ,20 ,20,
-            # ]
-            # damping = [
-            #     5, 5, 5, 5,
-            #     4, 4,
-            #     5, 5, 5, 5,
-            #     4, 4,
-            #     5, 5, 5,
-            #     10, 10, 10, 10, 0.5, 0.5, 0.5,
-            #     10, 10, 10, 10, 0.5, 0.5, 0.5,    
-            # ]
-            # Kp (stiffness) per DOF
-            stiffness = [40.179238, 99.098428, 40.179238, 99.098428, 28.501246, 28.501246,
-                        40.179238, 99.098428, 40.179238, 99.098428, 28.501246, 28.501246,
-                        40.179238, 28.501246, 28.501246,
-                        14.250623, 14.250623, 14.250623, 14.250623, 14.250623, 16.778327, 16.778327,
-                        14.250623, 14.250623, 14.250623, 14.250623, 14.250623, 16.778327, 16.778327]
-
-            # Kd (damping) per DOF
-            damping = [2.557890, 6.308802, 2.557890, 6.308802, 1.814446, 1.814446,
-                    2.557890, 6.308802, 2.557890, 6.308802, 1.814446, 1.814446,
-                    2.557890, 1.814446, 1.814446,
-                    0.907223, 0.907223, 0.907223, 0.907223, 0.907223, 1.068142, 1.068142,
-                    0.907223, 0.907223, 0.907223, 0.907223, 0.907223, 1.068142, 1.068142]
-
-            # armature per DOF (NOTE: feet + waist roll/pitch are doubled vs ARMATURE_5020)
-            armature = [0.010178, 0.025102, 0.010178, 0.025102, 0.007219, 0.007219,
-                        0.010178, 0.025102, 0.010178, 0.025102, 0.007219, 0.007219,
-                        0.010178, 0.007219, 0.007219,
-                        0.003610, 0.003610, 0.003610, 0.003610, 0.003610, 0.004250, 0.004250,
-                        0.003610, 0.003610, 0.003610, 0.003610, 0.003610, 0.004250, 0.004250]
-
-            # effort limits per DOF (used for dof_prop["effort"] and for torque_limits)
-            effort = [88.0, 139.0, 88.0, 139.0, 50.0, 50.0,
-                    88.0, 139.0, 88.0, 139.0, 50.0, 50.0,
-                    88.0, 50.0, 50.0,
-                    25.0, 25.0, 25.0, 25.0, 25.0, 5.0, 5.0,
-                    25.0, 25.0, 25.0, 25.0, 25.0, 5.0, 5.0]
-            action_scale = [e/k for e, k in zip(effort, stiffness)]
-            dof_prop["effort"] = effort
-            if self.cfg["env"].get("retargetPositionControl", False):
-                dof_prop["stiffness"] = stiffness
-                dof_prop["damping"] = damping
-            # dof_armature_29 = [0.0103, 0.0251, 0.0103, 0.0251, 0.003597, 0.003597] * 2 + [0.0103] * 3 + [0.003597] * 14       # 8 (original small joints) + 4 (extra wrist DoF)
-            dof_prop["armature"] = armature
-            self.gym.set_actor_dof_properties(env_ptr, humanoid_handle, dof_prop)
-            body_props = self.gym.get_actor_rigid_body_properties(env_ptr, humanoid_handle)
-            body_props, mass_params = self._process_rigid_body_props(body_props, env_id)
-            self.gym.set_actor_rigid_body_properties(
-                env_ptr, humanoid_handle, body_props, recomputeInertia=True
-            )
-
-            self.p_gains = torch.tensor(stiffness, device=self.device, dtype=torch.float32)
-            self.d_gains = torch.tensor(damping, device=self.device, dtype=torch.float32)
-            self.torque_limits = torch.tensor(dof_prop["effort"], device=self.device, dtype=torch.float32) * 0.8
+            # Stiffness/damping/armature/effort limits of the drives are set in isaac/scene_cfg.py.
+            action_scale = [e/k for e, k in zip(G1_EFFORT, G1_STIFFNESS)]
+            self.p_gains = torch.tensor(G1_STIFFNESS, device=self.device, dtype=torch.float32)
+            self.d_gains = torch.tensor(G1_DAMPING, device=self.device, dtype=torch.float32)
+            self.torque_limits = torch.tensor(G1_EFFORT, device=self.device, dtype=torch.float32) * 0.8
             self.action_scale = torch.tensor(action_scale, device=self.device, dtype=torch.float32)
-                    
-        # fetch all the data
-        shape_props        = self.gym.get_actor_rigid_shape_properties(env_ptr, humanoid_handle)
-        body_names         = self.gym.get_actor_rigid_body_names(env_ptr, humanoid_handle)
-        body_shape_indices = self.gym.get_actor_rigid_body_shape_indices(env_ptr, humanoid_handle)
 
-        # for each body, modify the filter on every shape in its range
-        for body_idx, idx_range in enumerate(body_shape_indices):
-            name = body_names[body_idx]
-            start, count = idx_range.start, idx_range.count
-            # print(name, start, count)
-            for si in range(start, start + count):
-                sp = shape_props[si]
-                if 'right' in name:
-                    if 'ankle' in name:
-                        sp.filter = 2
-                    elif 'knee' in name:
-                        sp.filter = 6
-                    elif 'hip' in name:
-                        sp.filter = 12
-                if 'left' in name:
-                    if 'ankle' in name:
-                        sp.filter = 16
-                    elif 'knee' in name:
-                        sp.filter = 48
-                    elif 'hip' in name:
-                        sp.filter = 96
-                # print(name, si, sp.filter)
-
-        # write them back
-        self.gym.set_actor_rigid_shape_properties(env_ptr, humanoid_handle, shape_props)
-        self.humanoid_handles.append(humanoid_handle)
-
+        self._randomize_rigid_shape_props()
+        self._randomize_rigid_body_props()
         return
+    
+    def _randomize_rigid_shape_props(self):
+        """Friction of all humanoid shapes, one value per environment drawn from 64 buckets.
 
+        NOTE: The default friction is 1.0 (the IsaacGym default the policies were trained with).
+        """
+        friction = torch.ones(self.num_envs)
+        if self.cfg['domain_rand']['randomize_friction'] and self.cfg['domain_rand']['domain_rand_general']:
+            # prepare friction randomization
+            friction_range = self.cfg['domain_rand']['friction_range']
+            num_buckets = 64
+            bucket_ids = torch.randint(0, num_buckets, (self.num_envs, 1))
+            friction_buckets = torch_rand_float(
+                friction_range[0], friction_range[1], (num_buckets, 1), device="cpu"
+            )
+            self.friction_coeffs = friction_buckets[bucket_ids]
+            friction = self.friction_coeffs.view(-1)
+        self._set_shape_materials(self.robot, friction)
+        return
+    
+    def _randomize_rigid_body_props(self):
+        """Torso mass and center-of-mass randomization (once, at start-up)."""
+        dr = self.cfg['domain_rand']
+        randomize_mass = dr['randomize_base_mass'] and dr['domain_rand_general']
+        randomize_com = dr['randomize_base_com'] and dr['domain_rand_general']
+        if not (randomize_mass or randomize_com):
+            return
+        view = self.robot.root_physx_view
+        torso = int(self._body_sim_ids[self.torso_idx])
+        env_ids = self._all_env_ids_cpu
+        if randomize_mass:
+            rng_mass = dr['added_mass_range']
+            masses = view.get_masses()
+            default_mass = masses[:, torso].clone()
+            masses[:, torso] += torch.empty(self.num_envs).uniform_(rng_mass[0], rng_mass[1])
+            view.set_masses(masses, env_ids)
+            # IsaacGym recomputed the inertia for the new mass (recomputeInertia=True)
+            inertias = view.get_inertias()
+            inertias[:, torso] *= (masses[:, torso] / default_mass)[:, None]
+            view.set_inertias(inertias, env_ids)
+        if randomize_com:
+            rng_com = dr['added_com_range']
+            coms = view.get_coms().clone()
+            coms[:, torso, :3] += torch.empty(self.num_envs, 3).uniform_(rng_com[0], rng_com[1])
+            view.set_coms(coms, env_ids)
+        return
+        
     def _build_pd_action_offset_scale(self):
         
         lim_low = self.dof_limits_lower.cpu().numpy()

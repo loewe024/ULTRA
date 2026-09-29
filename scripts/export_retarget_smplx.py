@@ -89,7 +89,7 @@ def main():
             env_path.write_text(yaml.safe_dump(env_cfg, sort_keys=False))
             train_cfg = copy.deepcopy(train_template)
             train_cfg["params"]["config"]["player"] = {
-                "games_num": 1, "n_game_life": 1, "determenistic": True, "render": False
+                "games_num": 1, "n_game_life": 1, "deterministic": True, "render": False
             }
             train_cfg["params"]["config"]["name"] = "g1_retarget_export"
             train_cfg["params"]["config"]["full_experiment_name"] = "g1_retarget_export"

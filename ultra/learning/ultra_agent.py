@@ -28,10 +28,10 @@
 
 from rl_games.algos_torch.running_mean_std import RunningMeanStd
 from rl_games.algos_torch import torch_ext
-from learning import a2c_common
+from rl_games.common import a2c_common
 import psutil
 import subprocess
-from isaacgym.torch_utils import *
+from utils.gym_torch_utils import *
 
 import time
 from datetime import datetime
@@ -43,29 +43,18 @@ import torch.distributed as dist
 import os
 from torch.nn.utils import clip_grad_norm_
 import learning.common_agent as common_agent
+from learning.ultra_models import load_checkpoint
 
 from tensorboardX import SummaryWriter
 
 
 class UltraAgent(common_agent.CommonAgent):
-    def __init__(self, base_name, config):
+    def __init__(self, base_name, params):
+        config = params['config']
         self.epoch_start = 0
-        if config.get('multi_gpu', False):
-            # local rank of the GPU in a node
-            self.local_rank = int(os.getenv("LOCAL_RANK", "0"))
-            # global rank of the GPU
-            self.rank = int(os.getenv("RANK", "0"))
-            # total number of GPUs across all nodes
-            self.world_size = int(os.getenv("WORLD_SIZE", "1"))
-
-            dist.init_process_group("nccl", rank=self.rank, world_size=self.world_size)
-
-            self.device_name = 'cuda:' + str(self.local_rank)
-            config['device'] = self.device_name
-            if self.rank != 0:
-                config['print_stats'] = False
-                config['lr_schedule'] = None
-        super().__init__(base_name, config)
+        # rl-games sets up torch.distributed (multi_gpu) and the per-rank device/config in A2CBase
+        super().__init__(base_name, params)
+        self.rank = self.global_rank
 
         if self._normalize_input:
             self._input_mean_std = RunningMeanStd(self._amp_observation_space.shape).to(self.ppo_device)
@@ -73,48 +62,8 @@ class UltraAgent(common_agent.CommonAgent):
         self.done_indices = []
         return
     
-    def trancate_gradients_and_step(self):
-        if self.multi_gpu:
-            # batch allreduce ops: see https://github.com/entity-neural-network/incubator/pull/220
-            all_grads_list = []
-            for param in self.model.parameters():
-                if param.grad is not None:
-                    all_grads_list.append(param.grad.view(-1))
-
-            all_grads = torch.cat(all_grads_list)
-            dist.all_reduce(all_grads, op=dist.ReduceOp.SUM)
-            offset = 0
-            for param in self.model.parameters():
-                if param.grad is not None:
-                    param.grad.data.copy_(
-                        all_grads[offset : offset + param.numel()].view_as(param.grad.data) / self.world_size
-                    )
-                    offset += param.numel()
-
-        if self.truncate_grads:
-            self.scaler.unscale_(self.optimizer)
-            clip_grad_norm_(self.model.parameters(), self.grad_norm)
-
-        self.scaler.step(self.optimizer)
-        self.scaler.update()
-
-    def update_lr(self, lr):
-        if self.multi_gpu:
-            lr_tensor = torch.tensor([lr], device=self.device)
-            dist.broadcast(lr_tensor, 0)
-            lr = lr_tensor.item()
-
-        for param_group in self.optimizer.param_groups:
-            param_group['lr'] = lr
-
-        # if self.has_central_value:
-        #    self.central_value_net.update_lr(lr)
-                
     def _maybe_init_ddp(self):
-        """Init torch.distributed if we're in multi-GPU mode and it's not up yet."""
-        if self.multi_gpu and dist.is_available() and not dist.is_initialized():
-            dist.init_process_group(backend="nccl")
-        # populate rank/world_size for convenience (works for single-GPU too)
+        """rank/world_size for convenience (torch.distributed is initialized by rl-games in multi-GPU mode)."""
         if dist.is_available() and dist.is_initialized():
             self.rank = dist.get_rank()
             self.world_size = dist.get_world_size()
@@ -303,8 +252,8 @@ class UltraAgent(common_agent.CommonAgent):
             self._input_mean_std.train()
         return
 
-    def get_stats_weights(self):
-        state = super().get_stats_weights()
+    def get_stats_weights(self, model_stats=False):
+        state = super().get_stats_weights(model_stats)
         if self._normalize_input:
             state['amp_input_mean_std'] = self._input_mean_std.state_dict()
         
@@ -316,14 +265,11 @@ class UltraAgent(common_agent.CommonAgent):
             self._input_mean_std.load_state_dict(weights['amp_input_mean_std'])
         return
 
-    def restore(self, fn):
-        checkpoint = torch_ext.load_checkpoint(fn)
-        self.model.load_state_dict(checkpoint['model'])
-        if self.normalize_input:
-            self.running_mean_std.load_state_dict(checkpoint['running_mean_std'])
+    def restore(self, fn, set_epoch=True):
+        checkpoint = load_checkpoint(fn)
+        self.set_full_state_weights(checkpoint, set_epoch=set_epoch)
         if self._normalize_input and 'amp_input_mean_std' in checkpoint:
             self._input_mean_std.load_state_dict(checkpoint['amp_input_mean_std'])
-        self.set_full_state_weights(checkpoint)
 
     def play_steps(self):
         self.set_eval()
@@ -447,9 +393,6 @@ class UltraAgent(common_agent.CommonAgent):
                 value = self.get_central_value(input_dict)
                 res_dict['values'] = value
 
-        if self.normalize_value:
-            res_dict['values'] = self.value_mean_std(res_dict['values'], True)
-        
         rand_action_mask = torch.bernoulli(rand_action_probs)
         det_action_mask = rand_action_mask == 0.0
         res_dict['actions'][det_action_mask] = res_dict['mus'][det_action_mask]
@@ -602,11 +545,11 @@ class UltraAgent(common_agent.CommonAgent):
         if self.is_rnn:
             rnn_masks = input_dict['rnn_masks']
             batch_dict['rnn_states'] = input_dict['rnn_states']
-            batch_dict['seq_length'] = self.seq_len
+            batch_dict['seq_length'] = self.seq_length
 
         # --- zero grads (DDP/AMP-safe) ---
         self.optimizer.zero_grad(set_to_none=True)
-        with torch.cuda.amp.autocast(enabled=self.mixed_precision):
+        with torch.amp.autocast("cuda", enabled=self.mixed_precision):
             res_dict = self.model(batch_dict)
             action_log_probs = res_dict['prev_neglogp']
             values = res_dict['values']
@@ -642,12 +585,8 @@ class UltraAgent(common_agent.CommonAgent):
                     param.grad = None
 
         self.scaler.scale(loss).backward()
-        if self.truncate_grads:
-            self.scaler.unscale_(self.optimizer)
-            nn.utils.clip_grad_norm_(self.model.parameters(), self.grad_norm)
-
-        self.scaler.step(self.optimizer)
-        self.scaler.update()
+        # averages the gradients over the ranks in multi-GPU mode, then clips (truncate_grads) and steps
+        self.trancate_gradients_and_step()
         with torch.no_grad():
             reduce_kl = not self.is_rnn
             kl_dist = torch_ext.policy_kl(mu.detach(), sigma.detach(), old_mu_batch, old_sigma_batch, reduce_kl)
@@ -666,20 +605,9 @@ class UltraAgent(common_agent.CommonAgent):
 
         return
 
-    def _ddp_allreduce_sum(self, t):
-        """All-reduce sum for a 0-D or 1-D tensor; returns a tensor."""
-        if dist.is_available() and dist.is_initialized():
-            dist.all_reduce(t, op=dist.ReduceOp.SUM)
-        return t
-
     def _loss_mean(self, c_unreduced):
-        c_sum   = c_unreduced.reshape(-1).float().sum()
-        c_count = torch.tensor([c_unreduced.numel()], device=c_sum.device, dtype=torch.float32).sum()
-        if dist.is_available() and dist.is_initialized():
-            c_sum   = self._ddp_allreduce_sum(c_sum)
-            c_count = self._ddp_allreduce_sum(c_count)
-        c_loss = c_sum / c_count.clamp_min(1.0)
-        return c_loss
+        # Local mean; in multi-GPU mode the gradients are averaged over the ranks in trancate_gradients_and_step.
+        return c_unreduced.reshape(-1).float().mean()
         
     def _load_config_params(self, config):
         super()._load_config_params(config)

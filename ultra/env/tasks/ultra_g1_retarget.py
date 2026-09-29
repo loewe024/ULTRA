@@ -1,7 +1,6 @@
 import torch
 
-from isaacgym import gymtorch
-from isaacgym.torch_utils import *
+from utils.gym_torch_utils import *
 
 from utils import torch_utils
 import torch.nn.functional as F
@@ -64,13 +63,8 @@ def _perturb_quat(q, std):
 
 class UltraG1Retarget(Humanoid_G1, Ultra):
 
-    def __init__(self, cfg, sim_params, physics_engine, device_type, device_id, headless):
-        super().__init__(cfg=cfg,
-                         sim_params=sim_params,
-                         physics_engine=physics_engine,
-                         device_type=device_type,
-                         device_id=device_id,
-                         headless=headless)
+    def __init__(self, cfg, render_mode=None, **kwargs):
+        super().__init__(cfg, render_mode, **kwargs)
         self.init_dof = torch.cat([to_torch([-0.1, 0, 0.0, 0.3, -0.2, 0, -0.1, 0, 0.0, 0.3, -0.2, 0, 0, 0, 0, 
                                              0, 0, 0, 0.5], device=self.device, dtype=torch.float),
                                    to_torch([0] * (self._num_actions_hand + self._num_actions_wrist), device=self.device, dtype=torch.float),
@@ -90,7 +84,6 @@ class UltraG1Retarget(Humanoid_G1, Ultra):
                 device=self.device,
                 dtype=torch.float,
             )
-        self.headless = headless
         self.noise_scale_vec = self._get_noise_scale_vec()
         self.long_term_t = torch.zeros([self.num_envs], device=self.device, dtype=torch.long)
 
@@ -252,18 +245,11 @@ class UltraG1Retarget(Humanoid_G1, Ultra):
         return
 
 
-    def _create_envs(self, num_envs, spacing, num_per_row):
-
-        self._target_handles = []
+    def _setup_env_properties(self):
         self._load_target_asset()
-        super()._create_envs(num_envs, spacing, num_per_row)
+        super()._setup_env_properties()
+        self._setup_target_properties()
         return
-
-    def _build_env(self, env_id, env_ptr, humanoid_asset):
-        super()._build_env(env_id, env_ptr, humanoid_asset)
-
-        self._build_target(env_id, env_ptr)
-        return   
 
     def _reset_target(self, env_ids):
         noise = _DEFAULT_NOISE_STD if self.cfg['domain_rand']['domain_rand_general'] else dict.fromkeys(_DEFAULT_NOISE_STD, 0.0)
@@ -283,130 +269,50 @@ class UltraG1Retarget(Humanoid_G1, Ultra):
         self._target_states[env_ids, 10:13]  = obj_rot_vel
         return
 
-    def _build_target(self, env_id, env_ptr):
-        col_group = env_id
-        col_filter = 0
-        segmentation_id = 0
-
-        default_pose = gymapi.Transform()
-        
-        target_handle = self.gym.create_actor(env_ptr, self._target_asset[env_id % len(self.object_name)], default_pose, self.object_name[env_id % len(self.object_name)], col_group, col_filter, segmentation_id)
-        env_cfg = self.cfg.get("env", {})
+    def _setup_target_properties(self):
         dr_cfg = self.cfg.get("domain_rand", {})
 
-        props = self.gym.get_actor_rigid_shape_properties(env_ptr, target_handle)
-        for p_idx in range(len(props)):
-            props[p_idx].restitution = 0.05
-            props[p_idx].friction = 0.6
-            props[p_idx].rolling_friction = 0.01
-            props[p_idx].torsion_friction = 0.01
-            # if self.object_name[env_id % len(self.object_name)] == 'plasticbox' or self.object_name[env_id % len(self.object_name)] == 'trashcan':
-            #     props[p_idx].rest_offset = 0.015
-        self.gym.set_actor_rigid_shape_properties(env_ptr, target_handle, props)
+        # NOTE: rolling friction (0.01) and torsion friction (0.01) of the IsaacGym version have no PhysX 5
+        # counterpart.
+        self._set_shape_materials(self.object, friction=0.6, restitution=0.05)
 
-        self.randomize_physical_properties(env_ptr, target_handle)
-
-        self._target_handles.append(target_handle)
-        self.gym.set_actor_scale(env_ptr, target_handle, self.ball_size)
-        
-        props = self.gym.get_actor_rigid_body_properties(env_ptr, target_handle)
-        for rbp in props:
-            orig_mass = rbp.mass
-            orig_com = rbp.com
-            orig_inertia_diag = gymapi.Vec3(
-                rbp.inertia.x.x,
-                rbp.inertia.y.y,
-                rbp.inertia.z.z
-            )
-            mass_min, mass_max = dr_cfg.get("obj_mass_range", [0.15, 1.5])
-            rare_mass_min, rare_mass_max = dr_cfg.get("obj_mass_rare_range", [0.001, 0.01])
-            rare_every = int(dr_cfg.get("obj_mass_rare_every", 10))
-            mass_scale = np.random.uniform(mass_min, mass_max)
-            if rare_every > 0 and env_id % rare_every == 0:
-                mass_scale = np.random.uniform(rare_mass_min, rare_mass_max)
-            rbp.mass = orig_mass * mass_scale
-            com_delta = dr_cfg.get("obj_com_range", [-0.05, 0.05])
-            rbp.com = gymapi.Vec3(
-                orig_com.x + np.random.uniform(com_delta[0], com_delta[1]),
-                orig_com.y + np.random.uniform(com_delta[0], com_delta[1]),
-                orig_com.z + np.random.uniform(com_delta[0], com_delta[1]),
-            )
-
-            inertia_min, inertia_max = dr_cfg.get("obj_inertia_range", [0.5, 2.0])
-            inertia_scale = mass_scale * np.random.uniform(inertia_min, inertia_max)
-            rand_inertia = gymapi.Vec3(
-                orig_inertia_diag.x * inertia_scale,
-                orig_inertia_diag.y * inertia_scale,
-                orig_inertia_diag.z * inertia_scale,
-            )
-            self.set_random_diagonal_inertia(rbp.inertia, rand_inertia)
-        self.gym.set_actor_rigid_body_properties(env_ptr, target_handle, props, recomputeInertia=True)
+        # Per-environment object mass, center of mass and inertia (IsaacGym: set once when building the envs).
+        view = self.object.root_physx_view
+        env_ids = self._all_env_ids_cpu
+        masses = view.get_masses()
+        coms = view.get_coms().clone()
+        inertias = view.get_inertias()
+        mass_min, mass_max = dr_cfg.get("obj_mass_range", [0.15, 1.5])
+        rare_mass_min, rare_mass_max = dr_cfg.get("obj_mass_rare_range", [0.001, 0.01])
+        rare_every = int(dr_cfg.get("obj_mass_rare_every", 10))
+        mass_scale = torch.empty(self.num_envs).uniform_(mass_min, mass_max)
+        if rare_every > 0:
+            rare = (env_ids % rare_every) == 0
+            mass_scale[rare] = torch.empty(int(rare.sum())).uniform_(rare_mass_min, rare_mass_max)
+        com_delta = dr_cfg.get("obj_com_range", [-0.05, 0.05])
+        # rigid object views: masses [N, 1], coms [N, 7] (pos, quat), inertias [N, 9]
+        coms[:, :3] += torch.empty(self.num_envs, 3).uniform_(com_delta[0], com_delta[1])
+        masses *= mass_scale.view(-1, 1)
+        # IsaacGym recomputed the inertia from the shapes for the new mass (recomputeInertia=True); for a uniform
+        # density body that is the original inertia scaled with the mass.
+        inertias *= mass_scale.view(-1, 1)
+        view.set_masses(masses, env_ids)
+        view.set_coms(coms, env_ids)
+        view.set_inertias(inertias, env_ids)
         return
-
-    def set_random_diagonal_inertia(self, mat33, vals):
-        mat33.x.x = vals.x
-        mat33.x.y = 0.0
-        mat33.x.z = 0.0
-
-        mat33.y.x = 0.0
-        mat33.y.y = vals.y
-        mat33.y.z = 0.0
-
-        mat33.z.x = 0.0
-        mat33.z.y = 0.0
-        mat33.z.z = vals.z
-    
-    def randomize_physical_properties(self, env_ptr, target_handle):
-        if not self.cfg['domain_rand']['domain_rand_general']:
-            return
-        # Sample new properties
-        env_cfg = self.cfg.get("env", {})
-        dr_cfg = self.cfg.get("domain_rand", {})
-        friction_min, friction_max = dr_cfg.get("obj_friction_range", [0.2, 1.2])
-        restitution_min, restitution_max = dr_cfg.get("obj_restitution_range", [0.0, 0.3])
-        rolling_min, rolling_max = dr_cfg.get("obj_rolling_friction_range", [0.0, 0.05])
-        torsion_min, torsion_max = dr_cfg.get("obj_torsion_friction_range", [0.0, 0.05])
-        compliance_min, compliance_max = dr_cfg.get("obj_compliance_range", [0.0, 1.0])
-        rest_min, rest_max = dr_cfg.get("obj_rest_offset_range", [0.0, 0.01])
-        contact_min, contact_max = dr_cfg.get("obj_contact_offset_range", [0.01, 0.03])
-
-        friction = np.random.uniform(friction_min, friction_max)
-        restitution = np.random.uniform(restitution_min, restitution_max)
-        rest_offset = np.random.uniform(rest_min, rest_max)
-        contact_offset = np.random.uniform(contact_min, contact_max)
-        if contact_offset < rest_offset + 1e-4:
-            contact_offset = rest_offset + 1e-4
-
-        # Retrieve existing properties
-        rigid_shape_props = self.gym.get_actor_rigid_shape_properties(env_ptr, target_handle)
-        # Modify properties (applies to all shapes of this actor)
-        for shape_prop in rigid_shape_props:
-            shape_prop.friction = friction
-            shape_prop.restitution = restitution
-            shape_prop.rolling_friction = np.random.uniform(rolling_min, rolling_max)
-            shape_prop.torsion_friction = np.random.uniform(torsion_min, torsion_max)
-            shape_prop.compliance = np.random.uniform(compliance_min, compliance_max)
-            if hasattr(shape_prop, "rest_offset"):
-                shape_prop.rest_offset = rest_offset
-            if hasattr(shape_prop, "contact_offset"):
-                shape_prop.contact_offset = contact_offset
-
 
     def _reset_env_tensors(self, env_ids):
         super()._reset_env_tensors(env_ids)
 
 
         env_ids_int32 = self._tar_actor_ids[env_ids]
-        self.gym.set_actor_root_state_tensor_indexed(self.sim, gymtorch.unwrap_tensor(self._root_states),
-                                                    gymtorch.unwrap_tensor(env_ids_int32), len(env_ids_int32))
+        self._set_actor_root_state_indexed(env_ids_int32)
     
         return
 
     def _reset_envs(self, env_ids):
         self._reset_default_env_ids = []
         self._reset_ref_env_ids = []
-        for eid in env_ids:
-            self.randomize_physical_properties(self.envs[eid], self._target_handles[eid])
 
         if (len(env_ids) > 0):
             self._reset_actors(env_ids)
@@ -1034,19 +940,17 @@ class UltraG1Retarget(Humanoid_G1, Ultra):
 
 
         env_ids_int32 = self._humanoid_actor_ids[env_ids]
-        self.gym.set_actor_root_state_tensor_indexed(self.sim,
-                                                     gymtorch.unwrap_tensor(self._root_states),
-                                                     gymtorch.unwrap_tensor(env_ids_int32), len(env_ids_int32))
-        self.gym.set_dof_state_tensor_indexed(self.sim,
-                                              gymtorch.unwrap_tensor(self._dof_state),
-                                              gymtorch.unwrap_tensor(env_ids_int32), len(env_ids_int32))
+        self._set_actor_root_state_indexed(env_ids_int32)
+        self._set_dof_state_indexed(env_ids_int32)
         
         env_ids_int32 = self._tar_actor_ids[env_ids]
-        self.gym.set_actor_root_state_tensor_indexed(self.sim, gymtorch.unwrap_tensor(self._root_states),
-                                                    gymtorch.unwrap_tensor(env_ids_int32), len(env_ids_int32))
+        self._set_actor_root_state_indexed(env_ids_int32)
 
         self._refresh_sim_tensors()
         self.actions = self.hoi_refs[:, 0, t, 13:42]
+        # keep the reference index at the playback frame (step() advances it by one)
+        self.progress_buf[env_ids] = torch.clamp(
+            torch.full_like(env_ids, t), max=self.max_episode_length[self.data_id[env_ids]] - 2)
         self.step(self.actions)
         return
 

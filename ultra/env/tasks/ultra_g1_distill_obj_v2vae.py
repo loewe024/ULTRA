@@ -5,8 +5,8 @@ from env.tasks.ultra_g1_retarget import (
     compute_humanoid_reset as compute_humanoid_reset_retarget,
 )
 from env.tasks.humanoid_g1 import *
-from isaacgym import gymapi, gymutil, gymtorch
-from isaacgym.torch_utils import *
+from utils.gym_torch_utils import *
+from isaac.viewer import DebugSphere
 
 from utils import torch_utils
 from rl_games.algos_torch import torch_ext
@@ -52,8 +52,8 @@ def euler_from_quaternion(quat_angle):
 
 class UltraDistillObjV2Point(UltraG1Retarget):
 
-    def __init__(self, cfg, sim_params, physics_engine, device_type, device_id, headless):
-        super().__init__(cfg=cfg, sim_params=sim_params, physics_engine=physics_engine, device_type=device_type, device_id=device_id, headless=headless)
+    def __init__(self, cfg, render_mode=None, **kwargs):
+        super().__init__(cfg, render_mode, **kwargs)
         self.action_buf = torch.zeros(
             (self.num_envs, 29), device=self.device, dtype=torch.float)
         self.mu_buf = torch.zeros(
@@ -77,7 +77,6 @@ class UltraDistillObjV2Point(UltraG1Retarget):
             'value_size': 1,
         }
         print(config)
-        network = ultra_network_builder.UltraBuilder()
         params = {
             "model": {
                 "name": "ultra"
@@ -113,22 +112,14 @@ class UltraDistillObjV2Point(UltraG1Retarget):
                 }
             }
         }
-        network.load(params['network'])
-        network = ultra_models.ModelUltraContinuous(network)
         model_path = cfg["env"]["teacherPolicy"]
         if not os.path.isfile(model_path):
             raise FileNotFoundError(
                 f"env.teacherPolicy='{model_path}' not found (resolved relative to {os.getcwd()}). "
                 "Train the Stage-2 teacher first (scripts/train_teacher.sh) or place a teacher checkpoint at this "
                 "path, then set env.teacherPolicy in ultra/data/cfg/g1_student_vae.yaml.")
-        ck = torch_ext.load_checkpoint(model_path)
-        model = network.build(config)
-        model.to(self.device)
-        model.load_state_dict(ck['model'])
-        self.model = model
-        running_mean, running_var = ck['running_mean_std']['running_mean'], ck['running_mean_std']['running_var']
-        self.running_mean = running_mean
-        self.running_var = running_var
+        self.model, self.running_mean, self.running_var = ultra_models.load_teacher_policy(
+            model_path, params['network'], obs_shape, 29, cfg["env"]["numEnvs"], self.device)
 
         self.head_camera_body_id = self._resolve_body_id(['d435_link', 'head_link'])
         env_cfg = cfg.get("env", {})
@@ -153,39 +144,12 @@ class UltraDistillObjV2Point(UltraG1Retarget):
         self._camera_debug_points = None
         self._camera_debug_env = 0
         # Debug visualization geometries
-        if hasattr(gymutil, "WireframeSphere"):
-            # Green for visible/randomized points
-            self._camera_debug_geom = gymutil.WireframeSphere(radius=0.015, color=(0.2, 0.8, 0.2))
-            # Blue for raw visible points (before randomization)
-            self._camera_debug_geom_raw = gymutil.WireframeSphere(radius=0.012, color=(0.2, 0.2, 0.8))
-            # Red for camera position
-            self._camera_debug_geom_cam = gymutil.WireframeSphere(radius=0.03, color=(0.9, 0.2, 0.2))
-            # Yellow for PCA corners
-            self._camera_debug_geom_corner = gymutil.WireframeSphere(radius=0.02, color=(0.9, 0.9, 0.2))
-            # Orange for the (masked-in) object goal shown in task_mode=object_obs playback
-            self._goal_debug_geom = gymutil.WireframeSphere(radius=0.03, color=(0.9, 0.6, 0.1))
-        elif hasattr(gymutil, "WireframeSphereGeometry"):
-            self._camera_debug_geom = gymutil.WireframeSphereGeometry(
-                0.015, 8, 8, None, color=(0.2, 0.8, 0.2)
-            )
-            self._camera_debug_geom_raw = gymutil.WireframeSphereGeometry(
-                0.012, 8, 8, None, color=(0.2, 0.2, 0.8)
-            )
-            self._camera_debug_geom_cam = gymutil.WireframeSphereGeometry(
-                0.03, 8, 8, None, color=(0.9, 0.2, 0.2)
-            )
-            self._camera_debug_geom_corner = gymutil.WireframeSphereGeometry(
-                0.02, 8, 8, None, color=(0.9, 0.9, 0.2)
-            )
-            self._goal_debug_geom = gymutil.WireframeSphereGeometry(
-                0.03, 8, 8, None, color=(0.9, 0.6, 0.1)
-            )
-        else:
-            self._camera_debug_geom = None
-            self._camera_debug_geom_raw = None
-            self._camera_debug_geom_cam = None
-            self._camera_debug_geom_corner = None
-            self._goal_debug_geom = None
+        # Debug visualization geometries (drawn as points by isaac/viewer.py)
+        self._camera_debug_geom = DebugSphere(radius=0.015, color=(0.2, 0.8, 0.2))
+        self._camera_debug_geom_raw = DebugSphere(radius=0.012, color=(0.2, 0.2, 0.8))
+        self._camera_debug_geom_cam = DebugSphere(radius=0.03, color=(0.9, 0.2, 0.2))
+        self._camera_debug_geom_corner = DebugSphere(radius=0.02, color=(0.9, 0.9, 0.2))
+        self._goal_debug_geom = DebugSphere(radius=0.03, color=(0.9, 0.6, 0.1))
         # Additional debug data
         self._camera_debug_raw_points = None  # Visible points before randomization
         self._camera_debug_camera_pos = None  # Camera position
@@ -324,10 +288,8 @@ class UltraDistillObjV2Point(UltraG1Retarget):
 
     def _resolve_body_id(self, candidate_names):
         """Find the first available rigid body index from a list of names."""
-        env_ptr = self.envs[0]
-        actor_handle = self.humanoid_handles[0]
         for name in candidate_names:
-            body_id = self.gym.find_actor_rigid_body_handle(env_ptr, actor_handle, name)
+            body_id = self._find_body_index(name)
             if body_id != -1:
                 return body_id
         return -1
@@ -1050,10 +1012,6 @@ class UltraDistillObjV2Point(UltraG1Retarget):
         # step physics and render each frame
         self._physics_step()
 
-        # to fix!
-        if self.device == 'cpu':
-            self.gym.fetch_results(self.sim, True)
-
         # compute observations, rewards, resets, ...
         self.post_physics_step()
         with torch.no_grad():
@@ -1075,8 +1033,6 @@ class UltraDistillObjV2Point(UltraG1Retarget):
             # print('env', self.obs_buf.shape)
         
 
-        if self.dr_randomizations.get('observations', None):
-            self.obs_buf = self.dr_randomizations['observations']['noise_lambda'](self.obs_buf)
 
 
     def reset(self, env_ids=None):
@@ -1204,26 +1160,11 @@ class UltraDistillObjV2Point(UltraG1Retarget):
         self._dof_vel[env_ids] = self.hoi_refs[self.data_id[env_ids], 0, t, 42:71]
 
         env_ids_int32 = self._humanoid_actor_ids[env_ids]
-        self.gym.set_actor_root_state_tensor_indexed(
-            self.sim,
-            gymtorch.unwrap_tensor(self._root_states),
-            gymtorch.unwrap_tensor(env_ids_int32),
-            len(env_ids_int32)
-        )
-        self.gym.set_dof_state_tensor_indexed(
-            self.sim,
-            gymtorch.unwrap_tensor(self._dof_state),
-            gymtorch.unwrap_tensor(env_ids_int32),
-            len(env_ids_int32)
-        )
+        self._set_actor_root_state_indexed(env_ids_int32)
+        self._set_dof_state_indexed(env_ids_int32)
 
         env_ids_int32 = self._tar_actor_ids[env_ids]
-        self.gym.set_actor_root_state_tensor_indexed(
-            self.sim,
-            gymtorch.unwrap_tensor(self._root_states),
-            gymtorch.unwrap_tensor(env_ids_int32),
-            len(env_ids_int32)
-        )
+        self._set_actor_root_state_indexed(env_ids_int32)
 
         self._refresh_sim_tensors()
         return env_ids
@@ -1250,33 +1191,9 @@ class UltraDistillObjV2Point(UltraG1Retarget):
         if self.viewer is None or self._video_output_path is None:
             return
 
-        # Try direct frame capture first
-        try:
-            viewport = self.gym.get_viewer_size(self.viewer)
-            width, height = viewport.x, viewport.y
-            self.gym.render_all_camera_sensors(self.sim)
-            frame = self.gym.get_viewer_image(self.viewer, self.sim)
-
-            if frame is not None:
-                frame_np = np.frombuffer(frame, dtype=np.uint8).reshape(height, width, 4)
-                frame_rgb = frame_np[:, :, :3]
-                self._video_frames.append(frame_rgb.copy())
-                return
-        except Exception:
-            pass
-
-        # Fallback: save to temp file and read back
-        import tempfile
-        temp_path = os.path.join(tempfile.gettempdir(), f"_isaacgym_frame_{len(self._video_frames):05d}.png")
-        try:
-            self.gym.write_viewer_image_to_file(self.viewer, temp_path)
-            from PIL import Image
-            img = Image.open(temp_path)
-            frame_rgb = np.array(img.convert('RGB'))
-            self._video_frames.append(frame_rgb)
-            os.remove(temp_path)
-        except Exception as e:
-            print(f"[VIDEO] Warning: Failed to capture frame: {e}")
+        frame = self.viewer.capture_frame()
+        if frame is not None:
+            self._video_frames.append(frame)
 
     def stop_video_recording(self):
         """Stop recording and save the video file."""
@@ -1559,44 +1476,27 @@ class UltraDistillObjV2Point(UltraG1Retarget):
         super()._update_debug_viz()
         if self.viewer is None:
             return
-        env_id = min(self._camera_debug_env, len(self.envs) - 1)
-        env_ptr = self.envs[env_id]
+        env_id = min(self._camera_debug_env, self.num_envs - 1)
 
         # Draw GREEN spheres: Final points (randomized or visible)
         if self._camera_debug_points is not None and self._camera_debug_geom is not None:
             for point in self._camera_debug_points:
-                pose = gymapi.Transform(
-                    p=gymapi.Vec3(float(point[0]), float(point[1]), float(point[2])),
-                    r=gymapi.Quat(0.0, 0.0, 0.0, 1.0)
-                )
-                gymutil.draw_lines(self._camera_debug_geom, self.gym, self.viewer, env_ptr, pose)
+                self.viewer.draw_sphere(env_id, (float(point[0]), float(point[1]), float(point[2])), self._camera_debug_geom)
 
         # Draw BLUE spheres: Raw visible points (before randomization)
         if self._camera_debug_raw_points is not None and self._camera_debug_geom_raw is not None:
             for point in self._camera_debug_raw_points:
-                pose = gymapi.Transform(
-                    p=gymapi.Vec3(float(point[0]), float(point[1]), float(point[2])),
-                    r=gymapi.Quat(0.0, 0.0, 0.0, 1.0)
-                )
-                gymutil.draw_lines(self._camera_debug_geom_raw, self.gym, self.viewer, env_ptr, pose)
+                self.viewer.draw_sphere(env_id, (float(point[0]), float(point[1]), float(point[2])), self._camera_debug_geom_raw)
 
         # Draw RED sphere: Camera position
         if self._camera_debug_camera_pos is not None and self._camera_debug_geom_cam is not None:
             cam_pos = self._camera_debug_camera_pos
-            pose = gymapi.Transform(
-                p=gymapi.Vec3(float(cam_pos[0]), float(cam_pos[1]), float(cam_pos[2])),
-                r=gymapi.Quat(0.0, 0.0, 0.0, 1.0)
-            )
-            gymutil.draw_lines(self._camera_debug_geom_cam, self.gym, self.viewer, env_ptr, pose)
+            self.viewer.draw_sphere(env_id, (float(cam_pos[0]), float(cam_pos[1]), float(cam_pos[2])), self._camera_debug_geom_cam)
 
         # Draw YELLOW spheres: PCA bounding box corners
         if self._camera_debug_pca_corners is not None and self._camera_debug_geom_corner is not None:
             for corner in self._camera_debug_pca_corners:
-                pose = gymapi.Transform(
-                    p=gymapi.Vec3(float(corner[0]), float(corner[1]), float(corner[2])),
-                    r=gymapi.Quat(0.0, 0.0, 0.0, 1.0)
-                )
-                gymutil.draw_lines(self._camera_debug_geom_corner, self.gym, self.viewer, env_ptr, pose)
+                self.viewer.draw_sphere(env_id, (float(corner[0]), float(corner[1]), float(corner[2])), self._camera_debug_geom_corner)
 
         # Draw camera frustum lines
         if self._camera_debug_frustum_lines is not None:
@@ -1607,9 +1507,7 @@ class UltraDistillObjV2Point(UltraG1Retarget):
 
             # Helper function to add a line
             def add_line(p1, p2, color):
-                vertices = np.array([p1, p2], dtype=np.float32)
-                colors = np.array([color, color], dtype=np.float32)
-                self.gym.add_lines(self.viewer, env_ptr, 1, vertices, colors)
+                self.viewer.draw_line(env_id, p1, p2, color)
 
             # Draw lines from camera to each frustum corner (white)
             white = [1.0, 1.0, 1.0]
@@ -1635,11 +1533,9 @@ class UltraDistillObjV2Point(UltraG1Retarget):
             enabled_ids = self._goal_debug_enabled_buf[:max_envs].nonzero(as_tuple=False).flatten().tolist()
             for goal_env_id in enabled_ids:
                 goal_pos = goal_pos_buf[goal_env_id].detach().cpu()
-                pose = gymapi.Transform(
-                    p=gymapi.Vec3(float(goal_pos[0]), float(goal_pos[1]), float(goal_pos[2])),
-                    r=gymapi.Quat(0.0, 0.0, 0.0, 1.0)
-                )
-                gymutil.draw_lines(self._goal_debug_geom, self.gym, self.viewer, self.envs[goal_env_id], pose)
+                self.viewer.draw_sphere(goal_env_id, (float(goal_pos[0]), float(goal_pos[1]), float(goal_pos[2])), self._goal_debug_geom)
+
+        self.viewer.flush()
 
 def _rand_vec(vec, scale=0.1):
     return vec + (2 * torch.rand_like(vec) - 1) * scale

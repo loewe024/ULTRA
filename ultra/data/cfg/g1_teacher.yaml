@@ -145,8 +145,8 @@ sim:
     warm_start: 0.25
 
 control:
-  # NOTE: only stiffness/damping below are legacy and NOT used - Humanoid_G1._build_env (env/tasks/humanoid_g1.py)
-  # hard-codes the per-DoF gains/armature/effort limits of the released policies. action_scale and control_type
+  # NOTE: only stiffness/damping below are legacy and NOT used - isaac/legacy_layout.py defines the per-DoF
+  # gains/armature/effort limits of the released policies. action_scale and control_type
   # ARE read by Humanoid_SMPLX._compute_torques every physics substep and must stay at the released values.
   stiffness: {
             "hip_yaw": 150,

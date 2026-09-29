@@ -27,8 +27,8 @@
 # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 from rl_games.algos_torch import torch_ext
-from learning import a2c_common
-from isaacgym.torch_utils import *
+from rl_games.common import a2c_common
+from utils.gym_torch_utils import *
 
 import numpy as np
 import torch 
@@ -38,8 +38,9 @@ import learning.ultra_agent as ultra_agent
 
 
 class UltraAgentDistill(ultra_agent.UltraAgent):
-    def __init__(self, base_name, config):
-        super().__init__(base_name, config)
+    def __init__(self, base_name, params):
+        config = params['config']
+        super().__init__(base_name, params)
         self.epoch_num_start = 0
         self.expert_loss_coef = config['expert_loss_coef']
         self.entropy_coef = config['entropy_coef']
@@ -200,8 +201,6 @@ class UltraAgentDistill(ultra_agent.UltraAgent):
                 value = self.get_central_value(input_dict)
                 res_dict['values'] = value
 
-        if self.normalize_value:
-            res_dict['values'] = self.value_mean_std(res_dict['values'], True)
 
         prior_mu = res_dict['rnn_states']['prior_out']['mu']
         encoder_mu = res_dict['rnn_states']['encoder_out']['mu']
@@ -397,9 +396,9 @@ class UltraAgentDistill(ultra_agent.UltraAgent):
         if self.is_rnn:
             rnn_masks = input_dict['rnn_masks']
             batch_dict['rnn_states'] = input_dict['rnn_states']
-            batch_dict['seq_length'] = self.seq_len
+            batch_dict['seq_length'] = self.seq_length
 
-        with torch.cuda.amp.autocast(enabled=self.mixed_precision):
+        with torch.amp.autocast("cuda", enabled=self.mixed_precision):
             res_dict = self.model(batch_dict)
             action_log_probs = res_dict['prev_neglogp']
             values = res_dict['values']
@@ -488,12 +487,8 @@ class UltraAgentDistill(ultra_agent.UltraAgent):
                 ]
                 if unused:
                     print("[UltraAgentDistill] Unused params:", unused)
-        if self.truncate_grads:
-            self.scaler.unscale_(self.optimizer)
-            nn.utils.clip_grad_norm_(self.model.parameters(), self.grad_norm)
-
-        self.scaler.step(self.optimizer)
-        self.scaler.update()
+        # averages the gradients over the ranks in multi-GPU mode, then clips (truncate_grads) and steps
+        self.trancate_gradients_and_step()
         with torch.no_grad():
             reduce_kl = not self.is_rnn
             kl_dist = torch_ext.policy_kl(mu.detach(), sigma.detach(), old_mu_batch, old_sigma_batch, reduce_kl)

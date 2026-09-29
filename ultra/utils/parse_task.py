@@ -26,69 +26,56 @@
 # OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-from env.tasks.ultra import Ultra
-from env.tasks.ultra_g1 import UltraG1
-from env.tasks.ultra_g1_retarget import UltraG1Retarget
-from env.tasks.ultra_g1_distill_obj_v2vae import UltraDistillObjV2Point
-from env.tasks.vec_task_wrappers import VecTaskPythonWrapper, VecTaskDAggerWrapper
-
-from isaacgym import rlgpu
-
+import gymnasium as gym
 import numpy as np
 
+from isaac.scene_cfg import make_env_cfg
+from isaac.vec_task import UltraDAggerVecTask, UltraVecTask
 
-def warn_task_name():
-    raise Exception(
-        "Unrecognized task!\nTask should be one of: [Ultra, UltraG1, UltraG1Retarget, UltraDistillObjV2Point, UltraDistillObjV3RL]")
+# legacy task name -> (Isaac Lab / gymnasium id, entry point, student/DAgger task)
+TASKS = {
+    "UltraG1": ("Ultra-G1-RetargetSMPLX-v0", "env.tasks.ultra_g1:UltraG1", False),
+    "UltraG1Retarget": ("Ultra-G1-Teacher-v0", "env.tasks.ultra_g1_retarget:UltraG1Retarget", False),
+    "UltraDistillObjV2Point": ("Ultra-G1-Student-v0", "env.tasks.ultra_g1_distill_obj_v2vae:UltraDistillObjV2Point", True),
+    "UltraDistillObjV3RL": ("Ultra-G1-Finetune-v0", "env.tasks.ultra_g1_distill_obj_v3rl:UltraDistillObjV3RL", True),
+}
 
-def parse_task(args, cfg, cfg_train, sim_params):
 
-    # create native task and pass custom config
-    device_id = args.device_id
-    rl_device = args.rl_device
+def register_tasks():
+    for gym_id, entry_point, _ in TASKS.values():
+        if gym_id not in gym.registry:
+            # resets and episode bookkeeping are done by the ULTRA agents, not by gymnasium wrappers
+            gym.register(id=gym_id, entry_point=entry_point, disable_env_checker=True, order_enforce=False)
 
-    cfg["seed"] = cfg_train.get("seed", -1)
+
+def resolve_task(name):
+    """Accept the legacy class name (``UltraG1Retarget``) or the gymnasium id (``Ultra-G1-Teacher-v0``)."""
+    if name in TASKS:
+        return name
+    for legacy_name, (gym_id, _, _) in TASKS.items():
+        if name == gym_id:
+            return legacy_name
+    raise Exception(f"Unrecognized task {name}!\nTask should be one of: {list(TASKS)} or {[t[0] for t in TASKS.values()]}")
+
+
+def is_distill_task(name):
+    return TASKS[resolve_task(name)][2]
+
+
+def parse_task(args, cfg, cfg_train):
+    """Create the Isaac Lab environment of ``args.task`` and wrap it for rl-games."""
+    task_name = resolve_task(args.task)
+    gym_id, _, distill = TASKS[task_name]
+    register_tasks()
+
+    cfg["seed"] = cfg_train["params"].get("seed", -1)
     cfg_task = cfg["env"]
     cfg_task["seed"] = cfg["seed"]
+    cfg["headless"] = args.headless
 
-    try:
-        task = eval(args.task)( # to HumanoidLocation(), obs defined here!
-            cfg=cfg,
-            sim_params=sim_params,
-            physics_engine=args.physics_engine,
-            device_type=args.device,
-            device_id=device_id,
-            headless=args.headless)
-    except NameError as e:
-        print(e)
-        warn_task_name()
-    env = VecTaskPythonWrapper(task, rl_device, cfg_train.get("clip_observations", np.inf), cfg_train.get("clip_actions", 1.0))
-
-    return task, env
-
-def parse_task_distill(args, cfg, cfg_train, sim_params):
-    if args.task == "UltraDistillObjV3RL":
-        from env.tasks.ultra_g1_distill_obj_v3rl import UltraDistillObjV3RL
-
-    # create native task and pass custom config
-    device_id = args.device_id
-    rl_device = args.rl_device
-
-    cfg["seed"] = cfg_train.get("seed", -1)
-    cfg_task = cfg["env"]
-    cfg_task["seed"] = cfg["seed"]
-
-    try:
-        task = eval(args.task)( # to HumanoidLocation(), obs defined here!
-            cfg=cfg,
-            sim_params=sim_params,
-            physics_engine=args.physics_engine,
-            device_type=args.device,
-            device_id=device_id,
-            headless=args.headless)
-    except NameError as e:
-        print(e)
-        warn_task_name()
-    env = VecTaskDAggerWrapper(task, rl_device, cfg_train.get("clip_observations", np.inf), cfg_train.get("clip_actions", 1.0))
+    env_cfg = make_env_cfg(cfg, device=args.device)
+    task = gym.make(gym_id, cfg=env_cfg).unwrapped
+    wrapper_cls = UltraDAggerVecTask if distill else UltraVecTask
+    env = wrapper_cls(task, args.rl_device, cfg_train.get("clip_observations", np.inf), cfg_train.get("clip_actions", 1.0))
 
     return task, env

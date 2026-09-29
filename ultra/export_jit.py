@@ -15,7 +15,6 @@ from pathlib import Path
 import torch
 import torch.nn as nn
 
-from rl_games.algos_torch import torch_ext
 from learning import ultra_network_builder_obj_v2, ultra_models
 
 _DEFAULT_CONFIG_PATH = (
@@ -86,8 +85,8 @@ def export_jit(ckpt_path, save_path, cfg_path=None, device="cpu", obs_dim=None):
     if not os.path.exists(ckpt_path):
         raise FileNotFoundError(f"Checkpoint not found: {ckpt_path}")
 
-    ckpt = torch_ext.load_checkpoint(ckpt_path)
-    running_stats = ckpt.get("running_mean_std")
+    ckpt = ultra_models.load_checkpoint(ckpt_path)
+    running_stats = ultra_models.input_normalizer(ckpt)
     if running_stats is None:
         if obs_dim is None:
             # normalize_input: False (released config) -> no running stats; read the observation size from the env cfg.
@@ -99,8 +98,7 @@ def export_jit(ckpt_path, save_path, cfg_path=None, device="cpu", obs_dim=None):
         running_mean = torch.zeros(int(obs_dim), dtype=torch.float32)
         running_var = torch.ones(int(obs_dim), dtype=torch.float32)
     else:
-        running_mean = running_stats["running_mean"]
-        running_var = running_stats["running_var"]
+        running_mean, running_var = running_stats
 
     cfg_path = Path(cfg_path) if cfg_path else _DEFAULT_CONFIG_PATH
     network_cfg = _load_network_config_from_yaml(cfg_path)
@@ -116,7 +114,7 @@ def export_jit(ckpt_path, save_path, cfg_path=None, device="cpu", obs_dim=None):
     network_builder.load(network_cfg)
     model_wrapper = ultra_models.ModelUltraContinuous(network_builder)
     policy = model_wrapper.build(config)
-    policy.load_state_dict(ckpt["model"])
+    ultra_models.load_model_state(policy, ckpt)
     policy.to(device)
     policy.eval()
 
