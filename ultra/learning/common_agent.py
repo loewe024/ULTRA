@@ -297,6 +297,10 @@ class CommonAgent(a2c_continuous.A2CAgent):
     def _record_train_batch_info(self, batch_dict, train_info):
         return
 
+    def _amp_debug(self, info):
+        """Called every step while a viewer is open (training without --headless); no debug output."""
+        return
+
     def _log_train_info(self, train_info, frame):
         self.writer.add_scalar('performance/update_time', train_info['update_time'], frame)
         self.writer.add_scalar('performance/play_time', train_info['play_time'], frame)

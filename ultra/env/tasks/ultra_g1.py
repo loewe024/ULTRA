@@ -168,9 +168,11 @@ class UltraG1(Humanoid_G1, Ultra):
                                                     ),dim=-1)
             # print(self.ref_hoi_obs_size, loaded_dict['hoi_data'].shape[-1])
             assert(self.ref_hoi_obs_size == loaded_dict['hoi_data'].shape[-1])
-            self.hoi_data_dict.append(loaded_dict)
             loaded_dict['hoi_data'] = torch.cat([loaded_dict['hoi_data'][0:1] for _ in range(30)]+[loaded_dict['hoi_data']], dim=0)
-            hoi_datas.append(loaded_dict['hoi_data'])
+            # Per-clip buffers are kept on the CPU: on the GPU they and the padding copies below exceed 16 GB
+            # next to the simulation (~800 OMOMO clips).
+            self.hoi_data_dict.append({k: v.cpu() for k, v in loaded_dict.items()})
+            hoi_datas.append(loaded_dict['hoi_data'].cpu())
             
             hoi_ref = torch.cat((
                                 loaded_dict['root_pos'].clone(), # 0:3
@@ -187,19 +189,18 @@ class UltraG1(Humanoid_G1, Ultra):
             hoi_ref = torch.cat([hoi_ref[0:1] for _ in range(30)]+[hoi_ref], dim=0)
             self.max_episode_length[-1] = (self.max_episode_length[-1]-1) * 2+1
             assert self.max_episode_length[-1] == loaded_dict['root_pos'].clone().shape[0]
-            hoi_refs.append(hoi_ref)
+            hoi_refs.append(hoi_ref.cpu())
         max_length = max(self.max_episode_length) + 30
         self.num_motions = len(hoi_refs)
         self.max_episode_length = to_torch(self.max_episode_length, dtype=torch.long) + 30
-        self.hoi_data = []
-        self.hoi_refs = []
-        for i, data in enumerate(hoi_datas):
-            pad_size = (0, 0, 0, max_length - data.size(0))
-            padded_data = F.pad(data, pad_size, "constant", 0)
-            self.hoi_data.append(padded_data)
-            self.hoi_refs.append(F.pad(hoi_refs[i], pad_size, "constant", 0))
-        self.hoi_data = torch.stack(self.hoi_data, dim=0)
-        self.hoi_refs = torch.stack(self.hoi_refs, dim=0).unsqueeze(1).repeat(1, 1, 1, 1)
+        # zero-padded to the longest motion; assembled on the CPU, then copied to the GPU once
+        hoi_data = torch.zeros(self.num_motions, max_length, hoi_datas[0].shape[-1])
+        hoi_refs_padded = torch.zeros(self.num_motions, max_length, hoi_refs[0].shape[-1])
+        for i, (data, ref) in enumerate(zip(hoi_datas, hoi_refs)):
+            hoi_data[i, :data.shape[0]] = data
+            hoi_refs_padded[i, :ref.shape[0]] = ref
+        self.hoi_data = hoi_data.to(self.device)
+        self.hoi_refs = hoi_refs_padded.to(self.device).unsqueeze(1)
         self.ref_reward = torch.zeros((self.hoi_refs.shape[0], self.hoi_refs.shape[1], self.hoi_refs.shape[2])).to(self.hoi_refs.device)
         self.ref_reward[:, 0, :] = 1.0
         self.ref_index = torch.zeros((self.num_envs, )).long().to(self.hoi_refs.device)

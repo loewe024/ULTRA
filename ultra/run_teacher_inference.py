@@ -8,6 +8,9 @@ import sys
 repo = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(repo / "ultra"))
 
+# see ultra/run.py: TorchScript must be disabled before torch is imported
+os.environ.setdefault("PYTORCH_JIT", "0")
+
 import torch
 from learning import ultra_players
 

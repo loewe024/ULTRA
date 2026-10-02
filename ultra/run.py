@@ -38,6 +38,11 @@
 
 import os
 
+# Run the @torch.jit.script helpers eagerly. With torch 2.7 TorchScript re-specializes them for every new batch
+# size, and the observation function then takes ~3 minutes per partial reset (eager: milliseconds). Must be set
+# before torch is imported; PYTORCH_JIT=1 restores scripting.
+os.environ.setdefault("PYTORCH_JIT", "0")
+
 from isaaclab.app import AppLauncher
 
 from utils.config import finalize_args, get_args_parser
