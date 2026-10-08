@@ -28,7 +28,7 @@ def main():
         object_name = match.group(2)
         asset_name = f'{object_name}_{args.asset_scale}'
         asset_dir = assets / asset_name
-        if not (asset_dir / f'{asset_name}.urdf').is_file() or not (asset_dir / f'{asset_name}.obj').is_file():
+        if not (asset_dir / f'{asset_name}.obj').is_file():
             continue
         targets[f'{source.stem}_{args.asset_scale}.pt'] = source
     if not targets:

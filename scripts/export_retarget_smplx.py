@@ -48,8 +48,6 @@ def main():
             continue
         asset_name = f"{match.group(1)}_{args.asset_scale}"
         asset_dir = repo / "ultra/data/assets/objects/diverse" / asset_name
-        if not (asset_dir / f"{asset_name}.urdf").is_file():
-            continue
         if not (asset_dir / f"{asset_name}.obj").is_file():
             continue
         sources.append(source)

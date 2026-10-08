@@ -345,7 +345,7 @@ python scripts/export_retarget_smplx.py \
 ```mermaid
 flowchart TD
     ex["scripts/export_retarget_smplx.py: main"]
-    ex --> flt["unterstützte Clips suchen<br/>(Objekt-URDF und -OBJ vorhanden)"]
+    ex --> flt["unterstützte Clips suchen<br/>(Objekt-OBJ vorhanden)"]
     flt --> loop{"für jeden Clip x jede --xyz-Variante"}
     loop -->|"Ziel existiert"| skip["überspringen"]
     loop -->|"neu"| wd["Arbeitsordner OUTPUT_work/clip/scale/xyz:<br/>Symlink auf den Clip"]

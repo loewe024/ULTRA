@@ -55,7 +55,6 @@ class Ultra(Humanoid_SMPLX):
         self.object_name = object_name_set
         self.robot_type = cfg['env']['robotType']
         self.object_density = cfg['env']['objectDensity']
-
         print(self.robot_type)
         self.num_motions = len(self.motion_file)
         print(self.num_motions)
@@ -332,8 +331,8 @@ class Ultra(Humanoid_SMPLX):
     def _reset_ref_state_init(self, env_ids):
         num_envs = env_ids.shape[0]
 
-        # i = to_torch([torch.where(self.obj2motion[i % len(self.object_name)] == 1)[0][torch.randint(self.obj2motion[i % len(self.object_name)].sum(), ())] for i in env_ids], device=self.device, dtype=torch.long)
-        i = to_torch([_ % self.num_motions for _ in env_ids], device=self.device, dtype=torch.long)
+        i = to_torch([torch.where(self.obj2motion[i % len(self.object_name)] == 1)[0][torch.randint(self.obj2motion[i % len(self.object_name)].sum(), ())] for i in env_ids], device=self.device, dtype=torch.long)
+        # i = to_torch([_ % self.num_motions for _ in env_ids], device=self.device, dtype=torch.long)
 
         if (self._state_init == Ultra.StateInit.Random
             or self._state_init == Ultra.StateInit.Hybrid):

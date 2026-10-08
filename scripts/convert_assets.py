@@ -26,7 +26,7 @@ simulation_app = app_launcher.app
 
 import glob  # noqa: E402
 
-from pxr import Gf, PhysxSchema, Usd, UsdPhysics  # noqa: E402
+from pxr import Gf, PhysxSchema, Sdf, Usd, UsdPhysics  # noqa: E402
 
 import isaaclab.sim as sim_utils  # noqa: E402
 from isaaclab.sim.converters import MeshConverter, MeshConverterCfg, UrdfConverter, UrdfConverterCfg  # noqa: E402
@@ -44,9 +44,15 @@ LEG_COLLISION_FILTERS = {
     ("left", "knee"): 48,
     ("left", "hip"): 96,
 }
+# Additional pairs that must not collide. The convex hulls of the pelvis cover overlap the space the thigh mounts
+# sweep through when the hips flex: without this filter, hip pitch stops at about -0.35 rad (the motions need about
+# -1.6 rad to bend down to an object), and the released teacher falls over on every pick-up motion.
+EXTRA_FILTERED_PAIRS = {"pelvis_contour_link": ("left_hip_pitch_link", "right_hip_pitch_link")}
 # URDF links without <inertial>; IsaacGym treated them as (almost) massless frames.
 MASSLESS_LINK_MASS = 1e-3
 MASSLESS_LINK_INERTIA = 1e-6
+# Revolute joints of g1_29dof.urdf; every one must get a force drive.
+G1_NUM_DOFS = 29
 # IsaacGym VHACD settings of the G1 (Humanoid_G1._create_envs).
 G1_DECOMPOSITION = dict(max_convex_hulls=5, hull_vertex_limit=16, voxel_resolution=60000)
 # IsaacGym VHACD settings of the objects (Ultra._load_target_asset); keyed by the hull budget.
@@ -80,10 +86,32 @@ def set_collision_offsets(prim):
     api.CreateRestOffsetAttr().Set(REST_OFFSET)
 
 
+def remove_empty_visual_refs(usd_path, links_without_visuals):
+    """Clear the ``visuals`` references the importer writes for links without any visual geometry.
+
+    They point to ``/visuals/<link>``, which is never created, and USD warns once per link and environment
+    ("Unresolved reference prim path") whenever the scene is composed.
+    """
+    stem = os.path.splitext(os.path.basename(usd_path))[0]
+    base_layer = Sdf.Layer.FindOrOpen(os.path.join(os.path.dirname(usd_path), "configuration", f"{stem}_base.usd"))
+    cleared = []
+    for root in base_layer.rootPrims:
+        for name in links_without_visuals:
+            spec = base_layer.GetPrimAtPath(root.path.AppendChild(name).AppendChild("visuals"))
+            if spec is not None and spec.hasReferences:
+                spec.referenceList.ClearEdits()
+                cleared.append(name)
+    if cleared:
+        base_layer.Save()
+    return sorted(cleared)
+
+
 def postprocess_g1(usd_path, urdf_path):
     import xml.etree.ElementTree as ET
 
-    massless = {l.get("name") for l in ET.parse(urdf_path).getroot().findall("link") if l.find("inertial") is None}
+    links = ET.parse(urdf_path).getroot().findall("link")
+    massless = {l.get("name") for l in links if l.find("inertial") is None}
+    cleared = remove_empty_visual_refs(usd_path, [l.get("name") for l in links if l.find("visual") is None])
 
     stage = Usd.Stage.Open(usd_path)
     bodies = {p.GetName(): p for p in stage.Traverse() if p.HasAPI(UsdPhysics.RigidBodyAPI)}
@@ -101,13 +129,22 @@ def postprocess_g1(usd_path, urdf_path):
     physics_path = os.path.join(os.path.dirname(usd_path), "configuration", f"{stem}_physics.usd")
     physics_stage = Usd.Stage.Open(physics_path)
     num_colliders = 0
+    drive_types = {}
     for prim in physics_stage.Traverse():
+        drive_type = prim.GetAttribute("drive:angular:physics:type")
+        if drive_type and drive_type.HasAuthoredValue():
+            drive_types[prim.GetName()] = drive_type.Get()
         if prim.HasAPI(UsdPhysics.CollisionAPI):
             set_collision_offsets(prim)
         if prim.HasAPI(UsdPhysics.MeshCollisionAPI):
             set_decomposition(prim, **G1_DECOMPOSITION)
             num_colliders += 1
     physics_stage.GetRootLayer().Save()
+    wrong = sorted(n for n, t in drive_types.items() if t != "force")
+    if len(drive_types) != G1_NUM_DOFS or wrong:
+        raise RuntimeError(
+            f"Converted G1 has {len(drive_types)} angular drives (expected {G1_NUM_DOFS}), non-force drives: {wrong}"
+        )
 
     filters = {name: leg_filter(name) for name in bodies}
     names = sorted(n for n, f in filters.items() if f)
@@ -117,10 +154,15 @@ def postprocess_g1(usd_path, urdf_path):
         if targets:
             UsdPhysics.FilteredPairsAPI.Apply(bodies[a]).CreateFilteredPairsRel().SetTargets(targets)
             num_pairs += len(targets)
+    for a, others in EXTRA_FILTERED_PAIRS.items():
+        rel = UsdPhysics.FilteredPairsAPI.Apply(bodies[a]).CreateFilteredPairsRel()
+        rel.SetTargets(sorted(set(rel.GetTargets()) | {bodies[b].GetPath() for b in others}))
+        num_pairs += len(others)
     stage.GetRootLayer().Save()
     print(
         f"[convert_assets] G1: {len(bodies)} bodies, {num_colliders} mesh colliders, {len(massless)} massless links,"
-        f" {num_pairs} filtered pairs"
+        f" {num_pairs} filtered pairs, {len(drive_types)} force drives,"
+        f" empty visual references cleared: {cleared or 'none'}"
     )
 
 
@@ -134,7 +176,14 @@ def convert_g1(force):
         merge_fixed_joints=False,
         collider_type="convex_decomposition",
         self_collision=True,
-        joint_drive=None,
+        # Force drives as in IsaacGym (DOF_MODE_POS): stiffness/damping in Nm/rad and Nm*s/rad. Without a
+        # joint_drive the importer writes acceleration drives, which scale the gains by the joint inertia.
+        # The gains themselves are set when spawning (ImplicitActuatorCfg in isaac/scene_cfg.py).
+        joint_drive=UrdfConverterCfg.JointDriveCfg(
+            drive_type="force",
+            target_type="position",
+            gains=UrdfConverterCfg.JointDriveCfg.PDGainsCfg(stiffness=0.0, damping=0.0),
+        ),
         make_instanceable=False,
         force_usd_conversion=force,
     )
