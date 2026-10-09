@@ -24,6 +24,7 @@ Schwerpunkt: alles bis und mit Retargeting sowie alles, was Isaac Lab benutzt. D
 8. [Stufe 2: Export nach `[T, 630]`](#8-stufe-2-export-nach-t-630)
 9. [Teacher und Student in Isaac Lab](#9-teacher-und-student-in-isaac-lab)
 10. [Auffälligkeiten und Stolpersteine](#10-auffälligkeiten-und-stolpersteine)
+11. [Alle Commands](#11-alle-commands)
 
 ---
 
@@ -810,3 +811,16 @@ Nachtrag 07.10.2026, gemessen und behoben:
 - **Die Envs überlappen räumlich.** `envSpacing: 1` bei Bewegungen über mehrere Meter. Physikalisch ist das folgenlos, im Viewer mit vielen Envs aber unübersichtlich.
 - **Namen führen in die Irre.** `Humanoid_SMPLX` ist die generische Basisklasse, `UltraG1Retarget` der Teacher, `ballSize` die Objektskalierung, `amp_observation_space` ein Überbleibsel ohne Diskriminator, `run_distill.py` nur noch ein Alias, und `_humanoid_actor_ids` sind Actor-Indizes einer Simulation, die es so nicht mehr gibt.
 - **Die Physik ist eine andere.** PhysX 5 aus Isaac Sim, andere konvexe Zerlegung, keine Roll- und Drehreibung. `docs/install.md` hält fest, dass Retargeting- und Tracking-Policies eventuell weiter trainiert werden müssen. Ob der mitgelieferte Teacher-Checkpoint in Isaac Lab so gut läuft wie in Isaac Gym, ist hier nicht geprüft.
+
+## 11. Alle Commands
+- Neues Retargeting vorbereiten mit neuen Objekten
+  - xml Files erstellen: python ultra/data/assets/objects/gxml.py
+  - usd Files erstellen: python scripts/convert_assets.py
+  - Clips filtern: python scripts/prepare_retarget_smplx.py
+- Training starten: ./scripts/train_retarget_smplx.sh --num_envs 2048
+- Training von Checkpoint fortsetzen: bash ./scripts/train_retarget_smplx.sh --num_envs 2048 --resume_from ./output/retarget_smplx/g1_retarget_smplx/nn/g1_retarget_smplx.pth
+- Tensorboard starten: tensorboard --logdir=././wandb/offline-run-20261008_163034-z0jhr6fm/files/output/retarget_smplx/g1_retarget_smplx/summaries/
+- Bewegungen mit Policy retargeten: python scripts/export_retarget_smplx.py   --input-dir InterAct/OMOMO_retarget   --checkpoint output/retarget_smplx/g1_retarget_smplx/nn/g1_retarget_smplx.pth   --output-dir output/retarget_export_080   --asset-scale 080_080_080   --xyz 1 1 1
+- Geretargetete Bewegung mit Isaasim visualisieren: sh ./scripts/play_dataset.sh
+- Teacher policy auf Bewegung anwenden: python ultra/run_teacher_inference.py --motion-dir InterAct/OMOMO_retarget_aug
+- Geretargetete Bewegung oder Rollout auf Teacher mit Mujoco visualisieren: python scripts/render_rollout.py output/teacher_inference/rollout.pt --out rollout.mp4

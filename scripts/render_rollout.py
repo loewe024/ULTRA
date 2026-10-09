@@ -1,17 +1,23 @@
-"""Replay G1 + object states kinematically in MuJoCo (no physics, no Isaac Sim, no GPU needed).
+"""Replay motions kinematically in MuJoCo (no physics, no Isaac Sim, no GPU needed).
 
 Accepts
-  * a rollout of ultra/run_teacher_inference.py (dict with observed_hoi / reference_hoi / motion_file), or
-  * a [T, 630] G1 motion (retargeting export, InterAct/OMOMO_retarget_aug).
-Both use the legacy layout: root pos 0:3, root quat (x, y, z, w) 3:7, joints 13:42 in LEGACY_DOF_NAMES order,
-object pos 71:74, object quat 74:78, body positions 84:201 (39 bodies). Frames are 60 Hz.
+  * a rollout of ultra/run_teacher_inference.py (dict with observed_hoi / reference_hoi / motion_file):
+    G1 + object, the reference as translucent spheres (green: G1 bodies, orange: object centre);
+  * a [T, 630] G1 motion (retargeting export, InterAct/OMOMO_retarget_aug), 60 Hz.
+    With --human <[T, 591] source clip> the human skeleton is drawn on top, interpolated to 60 Hz and scaled
+    like the retargeting target (0.8 x the --xyz factors encoded in the file name);
+  * a [T, 591] human motion (InterAct/OMOMO_retarget, before retargeting), 30 Hz:
+    skeleton of the 52 joints + object; bodies with a contact label are drawn red.
 
-With a rollout, the reference is drawn as translucent spheres (green: G1 bodies, orange: object centre).
+G1 layout: root pos 0:3, root quat (x, y, z, w) 3:7, joints 13:42 in LEGACY_DOF_NAMES order, object pos 71:74,
+object quat 74:78, body positions 84:201. Human layout: root 0:3, joint positions 162:318 (52 x 3), object pos
+318:321, object quat 321:325, contact labels 331:383.
 
 Usage (from the repository root):
     python scripts/render_rollout.py output/teacher_inference/rollout.pt --out rollout.mp4
-    python scripts/render_rollout.py output/teacher_inference/rollout.pt --view
-    python scripts/render_rollout.py InterAct/OMOMO_retarget_aug/sub10_largebox_000_....pt --out ref.mp4
+    python scripts/render_rollout.py InterAct/OMOMO_retarget/sub10_largebox_003.pt --view
+    python scripts/render_rollout.py output/retarget_export_080/sub10_largebox_003_xyz..._080_080_080.pt \\
+        --human InterAct/OMOMO_retarget/sub10_largebox_003.pt --out compare.mp4
 Without a display, rendering to a file needs MUJOCO_GL=egl.
 """
 
@@ -32,58 +38,84 @@ sys.path.insert(0, os.path.join(REPO, "ultra"))
 
 from isaac.legacy_layout import LEGACY_DOF_NAMES  # noqa: E402
 
-FPS = 60
 SCALE_RE = re.compile(r"_(\d{3})_(\d{3})_(\d{3})$")
+XYZ_RE = re.compile(r"_xyz(\d+p\d+)-(\d+p\d+)-(\d+p\d+)")
+HUMAN_SCALING = 0.8  # env.scaling of g1_retarget_smplx.yaml
+
+# Parent of each of the 52 human joints (InterMimic / SMPL-X order: legs, spine, left arm + 15 finger joints,
+# right arm + 15 finger joints). -1: root.
+HUMAN_PARENTS = [-1, 0, 1, 2, 3, 0, 5, 6, 7, 0, 9, 10, 11, 12, 11, 14, 15, 16]
+for base in (17,):
+    for finger in range(5):
+        HUMAN_PARENTS += [base, 18 + 3 * finger, 19 + 3 * finger]
+HUMAN_PARENTS += [11, 33, 34, 35]
+for finger in range(5):
+    HUMAN_PARENTS += [36, 37 + 3 * finger, 38 + 3 * finger]
+assert len(HUMAN_PARENTS) == 52
 
 
 def load(path):
     data = torch.load(path, map_location="cpu", weights_only=False)
     if isinstance(data, dict):
-        return data["observed_hoi"].numpy(), data["reference_hoi"].numpy(), data["motion_file"]
-    return data.numpy(), None, path
+        return ("rollout", data["observed_hoi"].detach().numpy(), data["reference_hoi"].detach().numpy(),
+                data["motion_file"])
+    data = data.detach().float().numpy()
+    kind = {591: "human", 630: "g1"}.get(data.shape[1])
+    if kind is None:
+        raise ValueError(f"{path}: expected [T, 591] (human) or [T, 630] (G1), got {list(data.shape)}")
+    return kind, data, None, path
 
 
 def object_from_motion(motion_file):
-    """``sub10_largebox_000_..._080_080_080.pt`` -> ('largebox', 0.8)."""
+    """``sub10_largebox_000_..._080_080_080.pt`` -> ('largebox', 0.8); no suffix -> original size."""
     stem = os.path.splitext(os.path.basename(motion_file))[0]
-    name = stem.split("_")[1]
     match = SCALE_RE.search(stem)
-    scale = int(match.group(1)) / 100.0 if match else 1.0
-    return name, scale
+    return stem.split("_")[1], (int(match.group(1)) / 100.0 if match else 1.0)
 
 
-def build_model(object_name, object_scale):
-    """Merge g1_29dof.xml with the object's MuJoCo XML (meshes in original size, scaled here)."""
+def xyz_from_motion(motion_file):
+    """Augmentation factors of an export (``..._xyz1p050000-1p000000-0p950000_...``), default 1."""
+    match = XYZ_RE.search(os.path.basename(motion_file))
+    return np.array([float(g.replace("p", ".")) for g in match.groups()]) if match else np.ones(3)
+
+
+def build_model(object_name, object_scale, with_robot=True):
+    """g1_29dof.xml (floor, light, robot) merged with the object's MuJoCo XML; the robot is removed if not needed."""
     robot_xml = os.path.join(REPO, "ultra/data/assets/g1/g1_29dof.xml")
     object_xml = os.path.join(REPO, f"ultra/data/assets/objects/{object_name}.xml")
     if not os.path.isfile(object_xml):
         raise FileNotFoundError(f"{object_xml} not found (MuJoCo object description, see ultra/data/assets/objects/)")
-    robot, obj = ET.parse(robot_xml).getroot(), ET.parse(object_xml).getroot()
-    compiler = robot.find("compiler")
+    root, obj = ET.parse(robot_xml).getroot(), ET.parse(object_xml).getroot()
+    compiler = root.find("compiler")
     compiler.set("meshdir", os.path.join(os.path.dirname(robot_xml), compiler.get("meshdir", ".")))
+    world = root.find("worldbody")
+    if not with_robot:
+        world.remove(world.find("body[@name='pelvis']"))
+        for tag in ("actuator", "sensor", "contact", "equality"):
+            for element in root.findall(tag):
+                root.remove(element)
     for tag in ("asset", "default", "worldbody"):
-        dst = robot.find(tag)
+        dst = root.find(tag)
         for child in list(obj.find(tag)):
             if tag == "asset" and child.tag == "mesh":
                 child.set("file", os.path.join(os.path.dirname(object_xml), child.get("file")))
                 child.set("scale", " ".join([str(object_scale)] * 3))
             dst.append(child)
-    # brighter floor and light for recordings
-    world = robot.find("worldbody")
     ET.SubElement(world, "light", pos="0 0 4", dir="0 0 -1", diffuse="0.8 0.8 0.8")
-    model = mujoco.MjModel.from_xml_string(ET.tostring(robot, encoding="unicode"))
-    return model
+    return mujoco.MjModel.from_xml_string(ET.tostring(root, encoding="unicode"))
 
 
-def qpos_indices(model):
-    dof = [model.jnt_qposadr[mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_JOINT, n)] for n in LEGACY_DOF_NAMES]
+def qpos_indices(model, with_robot):
     free = [j for j in range(model.njnt) if model.jnt_type[j] == mujoco.mjtJoint.mjJNT_FREE]
+    if not with_robot:
+        return None, None, model.jnt_qposadr[free[0]]
+    dof = [model.jnt_qposadr[mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_JOINT, n)] for n in LEGACY_DOF_NAMES]
     root = model.jnt_qposadr[mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_JOINT, "pelvis")]
     obj = [model.jnt_qposadr[j] for j in free if model.jnt_qposadr[j] != root][0]
     return root, np.array(dof), obj
 
 
-def set_state(data, frame, idx):
+def set_robot(data, frame, idx):
     root, dof, obj = idx
     data.qpos[root:root + 3] = frame[0:3]
     data.qpos[root + 3:root + 7] = np.roll(frame[3:7], 1)       # xyzw -> wxyz
@@ -93,48 +125,124 @@ def set_state(data, frame, idx):
     data.qvel[:] = 0
 
 
-def add_reference(scene, ref_frame):
-    """Translucent spheres at the reference body positions and the reference object position."""
-    def sphere(pos, radius, rgba):
-        if scene.ngeom >= scene.maxgeom:
-            return
-        mujoco.mjv_initGeom(scene.geoms[scene.ngeom], mujoco.mjtGeom.mjGEOM_SPHERE, np.array([radius, 0, 0]),
-                            np.asarray(pos, dtype=np.float64), np.eye(3).flatten(), np.asarray(rgba, dtype=np.float32))
-        scene.ngeom += 1
+def set_object(data, pos, quat_xyzw, obj_adr):
+    data.qpos[obj_adr:obj_adr + 3] = pos
+    data.qpos[obj_adr + 3:obj_adr + 7] = np.roll(quat_xyzw, 1)
+    data.qvel[:] = 0
 
+
+def _sphere(scene, pos, radius, rgba):
+    if scene.ngeom >= scene.maxgeom:
+        return
+    mujoco.mjv_initGeom(scene.geoms[scene.ngeom], mujoco.mjtGeom.mjGEOM_SPHERE, np.array([radius, 0, 0]),
+                        np.asarray(pos, dtype=np.float64), np.eye(3).flatten(), np.asarray(rgba, dtype=np.float32))
+    scene.ngeom += 1
+
+
+def _bone(scene, a, b, width, rgba):
+    if scene.ngeom >= scene.maxgeom:
+        return
+    geom = scene.geoms[scene.ngeom]
+    mujoco.mjv_initGeom(geom, mujoco.mjtGeom.mjGEOM_CAPSULE, np.zeros(3), np.zeros(3), np.eye(3).flatten(),
+                        np.asarray(rgba, dtype=np.float32))
+    mujoco.mjv_connector(geom, mujoco.mjtGeom.mjGEOM_CAPSULE, width, np.asarray(a, dtype=np.float64),
+                         np.asarray(b, dtype=np.float64))
+    scene.ngeom += 1
+
+
+def draw_g1_reference(scene, ref_frame):
     for p in ref_frame[84:201].reshape(39, 3):
-        sphere(p, 0.03, (0.1, 0.9, 0.2, 0.5))
-    sphere(ref_frame[71:74], 0.06, (1.0, 0.5, 0.0, 0.5))
+        _sphere(scene, p, 0.03, (0.1, 0.9, 0.2, 0.5))
+    _sphere(scene, ref_frame[71:74], 0.06, (1.0, 0.5, 0.0, 0.5))
 
 
-def make_camera(model):
-    cam = mujoco.MjvCamera()
-    cam.type = mujoco.mjtCamera.mjCAMERA_TRACKING
-    cam.trackbodyid = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, "pelvis")
-    cam.distance, cam.elevation, cam.azimuth = 3.0, -15.0, 135.0
-    return cam
+def draw_skeleton(scene, joints, contact, alpha=1.0):
+    """joints [52, 3]; contact [52] (1: in contact)."""
+    bone_rgba = (0.25, 0.45, 0.95, alpha)
+    for j, parent in enumerate(HUMAN_PARENTS):
+        if parent >= 0:
+            fingers = j >= 18 and not 33 <= j <= 36
+            _bone(scene, joints[parent], joints[j], 0.006 if fingers else 0.015, bone_rgba)
+    for j, p in enumerate(joints):
+        fingers = j >= 18 and not 33 <= j <= 36
+        rgba = (0.95, 0.15, 0.1, alpha) if contact[j] > 0.5 else (0.9, 0.9, 0.95, alpha)
+        _sphere(scene, p, 0.01 if fingers else 0.025, rgba)
+
+
+def human_track(raw, scale, to_60hz):
+    """Joint positions [T, 52, 3] and contact labels [T, 52]; optionally as the retargeting target at 60 Hz."""
+    joints = raw[:, 162:318].reshape(-1, 52, 3)
+    contact = np.round(raw[:, 331:383])
+    if to_60hz:  # as UltraG1._load_motion: drop frame 0, interpolate 30 -> 60 Hz
+        joints, contact = joints[1:], contact[1:]
+        t_new = np.arange((len(joints) - 1) * 2 + 1) / 2.0
+        idx = np.arange(len(joints))
+        joints = np.stack([np.stack([np.interp(t_new, idx, joints[:, j, k]) for k in range(3)], -1)
+                           for j in range(52)], 1)
+        contact = contact[np.round(t_new).astype(int).clip(max=len(contact) - 1)]
+    return joints * scale, contact
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("path", help="rollout.pt or [T, 630] motion file")
-    parser.add_argument("--out", help="write an MP4 video to this path")
+    parser.add_argument("path", help="rollout.pt, [T, 630] G1 motion or [T, 591] human motion")
+    parser.add_argument("--human", help="[T, 591] source clip to overlay on a [T, 630] G1 motion")
+    parser.add_argument("--out", help="write a video to this path (.mp4)")
     parser.add_argument("--view", action="store_true", help="open the interactive MuJoCo viewer")
-    parser.add_argument("--no-reference", action="store_true", help="do not draw the reference")
+    parser.add_argument("--no-reference", action="store_true", help="do not draw the reference of a rollout")
     parser.add_argument("--speed", type=float, default=1.0, help="playback speed in the viewer")
     parser.add_argument("--size", type=int, nargs=2, default=(960, 720), metavar=("W", "H"))
     args = parser.parse_args()
     if not args.out and not args.view:
         parser.error("choose --out video.mp4 and/or --view")
+    if args.out and os.path.splitext(args.out)[1].lower() not in (".mp4", ".mov", ".mkv", ".avi", ".gif"):
+        parser.error(f"--out {args.out}: use a video file ending (.mp4, .mov, .mkv, .avi or .gif)")
 
-    states, reference, motion_file = load(args.path)
-    if args.no_reference:
-        reference = None
+    kind, states, reference, motion_file = load(args.path)
+    if args.human and kind != "g1":
+        parser.error("--human only works with a [T, 630] G1 motion")
+    with_robot = kind != "human"
     object_name, object_scale = object_from_motion(motion_file)
-    model = build_model(object_name, object_scale)
+    model = build_model(object_name, object_scale, with_robot)
     data = mujoco.MjData(model)
-    idx = qpos_indices(model)
-    print(f"{len(states)} frames, object {object_name} x{object_scale}, reference {'yes' if reference is not None else 'no'}")
+    idx = qpos_indices(model, with_robot)
+    fps = 30 if kind == "human" else 60
+
+    overlay = None  # per-frame drawing on top of the MuJoCo scene
+    if kind == "rollout" and not args.no_reference:
+        overlay = lambda scene, t: draw_g1_reference(scene, reference[t])  # noqa: E731
+    elif kind == "human":
+        states = states[1:]  # frame 0 of the InterMimic clips is all zeros (ULTRA drops it as well)
+        joints, contact = human_track(states, 1.0, to_60hz=False)
+        overlay = lambda scene, t: draw_skeleton(scene, joints[t], contact[t])  # noqa: E731
+    elif args.human:
+        raw = torch.load(args.human, map_location="cpu", weights_only=False).detach().float().numpy()
+        joints, contact = human_track(raw, HUMAN_SCALING * xyz_from_motion(motion_file), to_60hz=True)
+        if len(joints) != len(states):
+            print(f"note: {len(joints)} human frames vs {len(states)} G1 frames, using the shorter one")
+        n = min(len(joints), len(states))
+        states = states[:n]
+        overlay = lambda scene, t: draw_skeleton(scene, joints[t], contact[t], alpha=0.6)  # noqa: E731
+
+    def apply(t):
+        if with_robot:
+            set_robot(data, states[t], idx)
+        else:
+            set_object(data, states[t, 318:321], states[t, 321:325], idx[2])
+        mujoco.mj_forward(model, data)
+
+    def configure(cam, t):
+        if with_robot:
+            cam.type = mujoco.mjtCamera.mjCAMERA_TRACKING
+            cam.trackbodyid = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, "pelvis")
+        else:
+            cam.type = mujoco.mjtCamera.mjCAMERA_FREE
+            cam.lookat[:] = states[t, 0:3]
+        if t == 0:
+            cam.distance, cam.elevation, cam.azimuth = 3.0, -15.0, 135.0
+
+    print(f"{len(states)} frames at {fps} Hz ({kind}), object {object_name} x{object_scale}, "
+          f"overlay {'yes' if overlay else 'no'}")
 
     if args.out:
         import imageio
@@ -142,35 +250,34 @@ def main():
         width, height = args.size
         model.vis.global_.offwidth, model.vis.global_.offheight = max(width, 640), max(height, 480)
         renderer = mujoco.Renderer(model, height=height, width=width)
-        cam = make_camera(model)
-        with imageio.get_writer(args.out, fps=FPS, macro_block_size=1) as writer:
-            for t, frame in enumerate(states):
-                set_state(data, frame, idx)
-                mujoco.mj_forward(model, data)
+        cam = mujoco.MjvCamera()
+        with imageio.get_writer(args.out, fps=fps, macro_block_size=1) as writer:
+            for t in range(len(states)):
+                apply(t)
+                configure(cam, t)
                 renderer.update_scene(data, camera=cam)
-                if reference is not None:
-                    add_reference(renderer.scene, reference[t])
+                if overlay:
+                    overlay(renderer.scene, t)
                 writer.append_data(renderer.render())
         renderer.close()
         print(f"wrote {args.out}")
 
     if args.view:
         with mujoco.viewer.launch_passive(model, data) as viewer:
-            viewer.cam.type = mujoco.mjtCamera.mjCAMERA_TRACKING
-            viewer.cam.trackbodyid = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, "pelvis")
-            viewer.cam.distance, viewer.cam.elevation, viewer.cam.azimuth = 3.0, -15.0, 135.0
+            configure(viewer.cam, 0)
             while viewer.is_running():
-                for t, frame in enumerate(states):
+                for t in range(len(states)):
                     if not viewer.is_running():
                         break
-                    set_state(data, frame, idx)
-                    mujoco.mj_forward(model, data)
+                    apply(t)
                     with viewer.lock():
+                        if not with_robot:
+                            viewer.cam.lookat[:] = states[t, 0:3]
                         viewer.user_scn.ngeom = 0
-                        if reference is not None:
-                            add_reference(viewer.user_scn, reference[t])
+                        if overlay:
+                            overlay(viewer.user_scn, t)
                     viewer.sync()
-                    time.sleep(1.0 / (FPS * args.speed))
+                    time.sleep(1.0 / (fps * args.speed))
 
 
 if __name__ == "__main__":
