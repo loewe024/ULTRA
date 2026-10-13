@@ -1,8 +1,8 @@
 <mujoco model="smallbox">
-  <compiler angle="radian" coordinate="global"/>
+  <!-- Note: compiler and option settings are inherited from robot XML during merge -->
 
   <asset>
-    <mesh name="smallbox_mesh" file="objects/smallbox/smallbox.obj" scale="1 1 1"/>
+    <mesh name="smallbox_mesh" file="objects/smallbox/smallbox.obj" scale="1.0 1.0 1.0"/>
     <material name="smallbox_mat" rgba="0.7 0.8 0.9 1"/>
   </asset>
 
@@ -10,10 +10,10 @@
     <default class="smallbox_phys">
       <geom
         contype="1" conaffinity="1"
-        friction="1.2 0.1 0.1"
-        density="10"
+        friction="0.6 0.01 0.01"
         solimp="0.99 0.99 0.01"
         solref="0.01 1"
+        density="25"
       />
     </default>
   </default>
@@ -26,6 +26,9 @@
             name="smallbox_geom"
             type="mesh" mesh="smallbox_mesh"
             material="smallbox_mat"/>
+
+      <!-- MuJoCo will compute mass, COM, and inertia from mesh geometry and density=25 -->
+      <!-- Expected values: mass=0.108 kg, com=0.003249 -0.005155 -0.006919, inertia=0.000109 0.000087 0.000151 -->
     </body>
   </worldbody>
 </mujoco>

@@ -252,12 +252,14 @@ flowchart TD
 
 ## 5. Stufe 0: Assets konvertieren
 
-**Start:** `python scripts/convert_assets.py` (einmalig; `--force` nach Änderungen an URDF oder Meshes).
+**Start:** `python scripts/convert_assets.py` (einmalig; `--force` nach Änderungen an URDF oder Meshes). Das Skript erzeugt zuerst die skalierten Objekt-Meshes in `objects/diverse/` aus `objects/objects/` (`--object-scales`, Standard 080 und 100).
 
 ```mermaid
 flowchart TD
     s["scripts/convert_assets.py"]
-    s --> al["AppLauncher, headless"]
+    s --> ps["prepare_scaled_objects (trimesh, ohne Isaac Sim)<br/>objects/objects/name/name.obj × --object-scales"]
+    ps --> dv[("objects/diverse/name_SSS_SSS_SSS/")]
+    dv --> al["AppLauncher, headless"]
     al --> g["convert_g1"]
     g --> uc["isaaclab UrdfConverter<br/>g1_29dof.urdf, merge_fixed_joints=False,<br/>convex_decomposition, self_collision"]
     uc --> pp["postprocess_g1 (pxr)"]

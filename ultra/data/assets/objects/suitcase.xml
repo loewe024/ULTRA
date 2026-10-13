@@ -1,8 +1,8 @@
 <mujoco model="suitcase">
-  <compiler angle="radian" coordinate="global"/>
+  <!-- Note: compiler and option settings are inherited from robot XML during merge -->
 
   <asset>
-    <mesh name="suitcase_mesh" file="objects/suitcase/suitcase.obj" scale="1 1 1"/>
+    <mesh name="suitcase_mesh" file="objects/suitcase/suitcase.obj" scale="1.0 1.0 1.0"/>
     <material name="suitcase_mat" rgba="0.7 0.8 0.9 1"/>
   </asset>
 
@@ -10,10 +10,10 @@
     <default class="suitcase_phys">
       <geom
         contype="1" conaffinity="1"
-        friction="1.2 0.1 0.1"
-        density="10"
+        friction="0.6 0.01 0.01"
         solimp="0.99 0.99 0.01"
         solref="0.01 1"
+        density="25"
       />
     </default>
   </default>
@@ -26,6 +26,9 @@
             name="suitcase_geom"
             type="mesh" mesh="suitcase_mesh"
             material="suitcase_mat"/>
+
+      <!-- MuJoCo will compute mass, COM, and inertia from mesh geometry and density=25 -->
+      <!-- Expected values: mass=0.440 kg, com=-0.001078 -0.021720 -0.001906, inertia=0.001212 0.000696 0.001209 -->
     </body>
   </worldbody>
 </mujoco>

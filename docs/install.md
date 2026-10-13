@@ -60,11 +60,19 @@ repeat the torch line from step 2.
 
 ## 5. Convert the assets
 
-Isaac Lab loads USD. Convert the G1 URDF and the object meshes once (writes `ultra/data/assets/usd/`, git-ignored):
+Isaac Lab loads USD. One script prepares everything the training needs: it scales the original-size object meshes
+`ultra/data/assets/objects/objects/<name>/<name>.obj` (as written by InterAct) to
+`ultra/data/assets/objects/diverse/<name>_<scale>/` and converts the G1 URDF and the scaled meshes to USD
+(`ultra/data/assets/usd/`, git-ignored):
 
 ```bash
-python scripts/convert_assets.py
+python scripts/convert_assets.py                                    # scales 080_080_080 and 100_100_100
+python scripts/convert_assets.py --object-scales 080_080_080 090_090_090
+python scripts/convert_assets.py --objects-only                     # only the scaled meshes, no Isaac Sim
 ```
+
+A scale tag is x, y, z in percent; the motion file names carry the same tag (`sub10_largebox_000_080_080_080.pt`).
+Existing scaled meshes and USD files are kept.
 
 All 39 G1 links are kept as bodies (the datasets and policies use them), and the leg self-collision filters of the
 IsaacGym version are written into the USD. Re-run with `--force` after changing the URDF or the object meshes.

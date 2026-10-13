@@ -1,39 +1,98 @@
-"""Convert the ULTRA robot and object assets (URDF/OBJ) to USD for Isaac Lab.
+"""Prepare the ULTRA robot and object assets for Isaac Lab: scaled object meshes, then URDF/OBJ -> USD.
 
-The G1 keeps every URDF link as a rigid body (fixed joints are not merged) so the 39-body layout used by the
-datasets and policies is preserved. The IsaacGym self-collision filter bits of the leg links
-(see ``LEG_COLLISION_FILTERS``) are reproduced with ``UsdPhysics.FilteredPairsAPI``.
-
-Objects are converted per object/scale and per convex-decomposition budget (5 hulls for position-controlled
-retargeting, 10 hulls otherwise). Density and scale are applied when spawning, not baked into the USD.
+1. Scaled object meshes: every ``objects/objects/<name>/<name>.obj`` (original size, as written by InterAct) is
+   scaled per ``--object-scales`` tag ``SSS_SSS_SSS`` (x, y, z in percent, scaled about the mesh origin) to
+   ``objects/diverse/<name>_<tag>/<name>_<tag>.obj``. The motion file names carry the same tag
+   (``sub10_largebox_000_080_080_080.pt``). Existing meshes are kept unless ``--force`` is given.
+2. USD conversion. The G1 keeps every URDF link as a rigid body (fixed joints are not merged) so the 39-body layout
+   used by the datasets and policies is preserved. The IsaacGym self-collision filter bits of the leg links
+   (see ``LEG_COLLISION_FILTERS``) are reproduced with ``UsdPhysics.FilteredPairsAPI``. Objects are converted per
+   object/scale and per convex-decomposition budget (5 hulls for position-controlled retargeting, 10 hulls
+   otherwise). Density and scale are applied when spawning, not baked into the USD.
 
 Usage (from the repository root):
-    python scripts/convert_assets.py [--force]
+    python scripts/convert_assets.py [--force] [--object-scales 080_080_080 100_100_100] [--objects-only]
 """
 
 import argparse
+import glob
 import os
+import re
 
-from isaaclab.app import AppLauncher
+REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+ASSET_ROOT = os.path.join(REPO, "ultra", "data", "assets")
+USD_ROOT = os.path.join(ASSET_ROOT, "usd")
+# Original-size meshes (InterAct layout <name>/<name>.obj) and the scaled variants the tasks load.
+OBJECT_SOURCE = os.path.join(ASSET_ROOT, "objects", "objects")
+OBJECT_DIVERSE = os.path.join(ASSET_ROOT, "objects", "diverse")
+# Asset scales of the released datasets (``--asset-scale`` of prepare_retarget_smplx.py / export_retarget_smplx.py).
+DEFAULT_OBJECT_SCALES = ("080_080_080", "100_100_100")
+SCALE_TAG = re.compile(r"^(\d{3})_(\d{3})_(\d{3})$")
 
-parser = argparse.ArgumentParser(description="Convert ULTRA assets to USD.")
-parser.add_argument("--force", action="store_true", help="Re-convert even if the USD files already exist.")
+
+def scale_factors(tag):
+    """``"080_080_080"`` -> ``(0.8, 0.8, 0.8)``."""
+    match = SCALE_TAG.fullmatch(tag)
+    if match is None:
+        raise ValueError(f"invalid object scale {tag!r}, expected three 3-digit percentages like 080_080_080")
+    return tuple(int(g) / 100.0 for g in match.groups())
+
+
+def prepare_scaled_objects(source_dir, scales, force):
+    """Write ``diverse/<name>_<tag>/<name>_<tag>.obj`` for every source mesh and scale tag; returns the new files.
+
+    Loaded without processing and exported with trimesh, which reproduces the released meshes byte for byte.
+    """
+    import trimesh
+
+    sources = sorted(p for p in glob.glob(os.path.join(source_dir, "*", "*.obj"))
+                     if os.path.splitext(os.path.basename(p))[0] == os.path.basename(os.path.dirname(p)))
+    if not sources:
+        raise FileNotFoundError(f"no object meshes <name>/<name>.obj in {source_dir}")
+    written = []
+    for src in sources:
+        name = os.path.splitext(os.path.basename(src))[0]
+        for tag in scales:
+            dst = os.path.join(OBJECT_DIVERSE, f"{name}_{tag}", f"{name}_{tag}.obj")
+            if os.path.isfile(dst) and not force:
+                continue
+            mesh = trimesh.load(src, process=False, force="mesh")
+            factors = scale_factors(tag)
+            mesh.apply_scale(factors[0] if len(set(factors)) == 1 else factors)
+            os.makedirs(os.path.dirname(dst), exist_ok=True)
+            mesh.export(dst)
+            written.append(dst)
+    print(f"[convert_assets] scaled objects: {len(sources)} meshes x {len(scales)} scales, {len(written)} written")
+    return written
+
+
+parser = argparse.ArgumentParser(description="Prepare the ULTRA assets (scaled object meshes, USD) for Isaac Lab.")
+parser.add_argument("--force", action="store_true", help="Re-create the scaled meshes and re-convert the USD files.")
+parser.add_argument("--object-scales", nargs="+", default=list(DEFAULT_OBJECT_SCALES), metavar="SSS_SSS_SSS",
+                    help="object scales to create (x, y, z in percent); default: %(default)s")
+parser.add_argument("--object-source", default=OBJECT_SOURCE,
+                    help="directory with the original-size meshes <name>/<name>.obj; default: %(default)s")
+parser.add_argument("--objects-only", action="store_true",
+                    help="only create the scaled object meshes, without starting Isaac Sim")
+args, _ = parser.parse_known_args()
+for _tag in args.object_scales:
+    scale_factors(_tag)
+if args.objects_only:
+    prepare_scaled_objects(args.object_source, args.object_scales, args.force)
+    raise SystemExit(0)
+
+from isaaclab.app import AppLauncher  # noqa: E402
+
 AppLauncher.add_app_launcher_args(parser)
 args = parser.parse_args()
 args.headless = True
 app_launcher = AppLauncher(args)
 simulation_app = app_launcher.app
 
-import glob  # noqa: E402
-
 from pxr import Gf, PhysxSchema, Sdf, Usd, UsdPhysics  # noqa: E402
 
 import isaaclab.sim as sim_utils  # noqa: E402
 from isaaclab.sim.converters import MeshConverter, MeshConverterCfg, UrdfConverter, UrdfConverterCfg  # noqa: E402
-
-REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-ASSET_ROOT = os.path.join(REPO, "ultra", "data", "assets")
-USD_ROOT = os.path.join(ASSET_ROOT, "usd")
 
 # IsaacGym shape filter bits of Humanoid_G1._build_env: two shapes do not collide if (filter_a & filter_b) != 0.
 LEG_COLLISION_FILTERS = {
@@ -194,7 +253,7 @@ def convert_g1(force):
 
 def convert_objects(force):
     paths = []
-    for obj_file in sorted(glob.glob(os.path.join(ASSET_ROOT, "objects", "diverse", "*", "*.obj"))):
+    for obj_file in sorted(glob.glob(os.path.join(OBJECT_DIVERSE, "*", "*.obj"))):
         name = os.path.splitext(os.path.basename(obj_file))[0]
         for hulls, decomposition in OBJECT_DECOMPOSITION.items():
             cfg = MeshConverterCfg(
@@ -216,6 +275,7 @@ def convert_objects(force):
 
 
 def main():
+    prepare_scaled_objects(args.object_source, args.object_scales, args.force)
     print("[convert_assets] G1 ->", convert_g1(args.force))
     convert_objects(args.force)
 

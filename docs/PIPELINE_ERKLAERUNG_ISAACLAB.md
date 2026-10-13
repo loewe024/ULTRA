@@ -42,7 +42,7 @@ Schwerpunkt: alles bis und mit Retargeting sowie alles, was Isaac Lab benutzt. D
 
 ```
 scripts/                     Einstiegspunkte pro Stufe (Shell + Python)
-  convert_assets.py          URDF/OBJ → USD (einmalig, nötig für Isaac Lab)
+  convert_assets.py          skalierte Objekt-Meshes erzeugen, URDF/OBJ → USD (einmalig, nötig für Isaac Lab)
   check_layout.py            Prüft die Legacy-Zuordnung gegen MuJoCo-Vorwärtskinematik
   prepare_retarget_smplx.py  Clips filtern, Symlinks mit Asset-Skalierung
   export_retarget_smplx.py   Stufe 2: Rollouts als [T, 630] speichern
@@ -126,7 +126,7 @@ scripts/train_retarget_smplx.sh
 
 | Stufe | Eingabe → Ausgabe | Einstieg | Task |
 |---|---|---|---|
-| 0 Assets | URDF/OBJ → USD | `scripts/convert_assets.py` | – |
+| 0 Assets | skalierte Objekt-Meshes, URDF/OBJ → USD | `scripts/convert_assets.py` | – |
 | 1 Retargeting | `[T, 591]` Mensch → Policy | `scripts/train_retarget_smplx.sh` | `UltraG1` |
 | 2 Export | `[T, 591]` + Policy → `[T, 630]` G1 | `scripts/export_retarget_smplx.py` | `UltraG1` |
 | 3 Teacher | `[T, 630]` → Tracking-Policy | `scripts/train_teacher.sh` | `UltraG1Retarget` |
@@ -364,7 +364,9 @@ Danach bearbeitet `postprocess_g1` (Zeile 83) die USD direkt mit `pxr`:
 - Alle Kollisionsformen bekommen `contact_offset = 0.02` und `rest_offset = 0.0`; Mesh-Kollider die Zerlegungsparameter (5 Hüllen, 16 Eckpunkte pro Hülle, Auflösung 60000). Das muss in die USD, weil der Importer die Kollider als instanzierte Prototypen ablegt, die sich beim Spawnen nicht mehr ändern lassen.
 - Die Kollisionsfilter-Bits aus Isaac Gym (rechts Knöchel 2, Knie 6, Hüfte 12; links 16, 48, 96) werden zu expliziten Paaren: Für je zwei Bein-Links, deren Bits sich überschneiden, wird ein Eintrag in `FilteredPairsAPI` geschrieben. Aus den Link-Namen ergeben sich 9 Paare pro Bein: die Hüft-Links untereinander, die Knöchel-Links untereinander, Knöchel gegen Knie und Knie gegen Hüfte. Knöchel gegen Hüfte kollidiert weiterhin, ebenso linkes gegen rechtes Bein und Arme gegen Rumpf.
 
-**Objekte** (`convert_objects`, Zeile 146): `MeshConverter` pro OBJ unter `objects/diverse/`, je zweimal: mit 5 Hüllen (`…_h5.usd`, für das Retargeting) und mit 10 Hüllen (`…_h10.usd`, sonst). Dichte und Skalierung werden beim Spawnen gesetzt.
+**Skalierte Objekt-Meshes** (`prepare_scaled_objects`, läuft zuerst und ohne Isaac Sim): Jedes OBJ in Originalgrösse `objects/objects/<name>/<name>.obj` wird für jede Skalierung aus `--object-scales` (Standard `080_080_080` und `100_100_100`, x/y/z in Prozent, um den Mesh-Ursprung) mit trimesh nach `objects/diverse/<name>_<tag>/<name>_<tag>.obj` geschrieben (`process=False`, dadurch bytegleich mit den mitgelieferten Varianten). Vorhandene Dateien bleiben ohne `--force` unverändert; `--objects-only` erzeugt nur die Meshes.
+
+**Objekte** (`convert_objects`): `MeshConverter` pro OBJ unter `objects/diverse/`, je zweimal: mit 5 Hüllen (`…_h5.usd`, für das Retargeting) und mit 10 Hüllen (`…_h10.usd`, sonst). Dichte und Skalierung werden beim Spawnen gesetzt.
 
 Die 8 mitgelieferten Objekte ergeben 16 USD-Dateien. Nach Änderungen an URDF oder Meshes: `--force`.
 

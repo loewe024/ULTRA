@@ -18,6 +18,12 @@ Usage (from the repository root):
     python scripts/render_rollout.py InterAct/OMOMO_retarget/sub10_largebox_003.pt --view
     python scripts/render_rollout.py output/retarget_export_080/sub10_largebox_003_xyz..._080_080_080.pt \\
         --human InterAct/OMOMO_retarget/sub10_largebox_003.pt --out compare.mp4
+
+Folder mode: give a folder of motions and an output folder; one .mp4 per motion is written (existing videos are
+skipped unless --overwrite). With --human <folder>, each G1 motion gets the skeleton of its source clip, found by
+name (``sub10_largebox_003_xyz..._080_080_080.pt`` -> ``sub10_largebox_003.pt``):
+    python scripts/render_rollout.py output/retarget_export_080 --human InterAct/OMOMO_retarget \\
+        --out videos/retarget_export_080
 Without a display, rendering to a file needs MUJOCO_GL=egl.
 """
 
@@ -183,24 +189,11 @@ def human_track(raw, scale, to_60hz):
     return joints * scale, contact
 
 
-def main():
-    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("path", help="rollout.pt, [T, 630] G1 motion or [T, 591] human motion")
-    parser.add_argument("--human", help="[T, 591] source clip to overlay on a [T, 630] G1 motion")
-    parser.add_argument("--out", help="write a video to this path (.mp4)")
-    parser.add_argument("--view", action="store_true", help="open the interactive MuJoCo viewer")
-    parser.add_argument("--no-reference", action="store_true", help="do not draw the reference of a rollout")
-    parser.add_argument("--speed", type=float, default=1.0, help="playback speed in the viewer")
-    parser.add_argument("--size", type=int, nargs=2, default=(960, 720), metavar=("W", "H"))
-    args = parser.parse_args()
-    if not args.out and not args.view:
-        parser.error("choose --out video.mp4 and/or --view")
-    if args.out and os.path.splitext(args.out)[1].lower() not in (".mp4", ".mov", ".mkv", ".avi", ".gif"):
-        parser.error(f"--out {args.out}: use a video file ending (.mp4, .mov, .mkv, .avi or .gif)")
-
-    kind, states, reference, motion_file = load(args.path)
-    if args.human and kind != "g1":
-        parser.error("--human only works with a [T, 630] G1 motion")
+def render(path, human, out, view, args):
+    """Render one motion to ``out`` and/or show it in the viewer."""
+    kind, states, reference, motion_file = load(path)
+    if human and kind != "g1":
+        raise ValueError("--human only works with a [T, 630] G1 motion")
     with_robot = kind != "human"
     object_name, object_scale = object_from_motion(motion_file)
     model = build_model(object_name, object_scale, with_robot)
@@ -215,8 +208,8 @@ def main():
         states = states[1:]  # frame 0 of the InterMimic clips is all zeros (ULTRA drops it as well)
         joints, contact = human_track(states, 1.0, to_60hz=False)
         overlay = lambda scene, t: draw_skeleton(scene, joints[t], contact[t])  # noqa: E731
-    elif args.human:
-        raw = torch.load(args.human, map_location="cpu", weights_only=False).detach().float().numpy()
+    elif human:
+        raw = torch.load(human, map_location="cpu", weights_only=False).detach().float().numpy()
         joints, contact = human_track(raw, HUMAN_SCALING * xyz_from_motion(motion_file), to_60hz=True)
         if len(joints) != len(states):
             print(f"note: {len(joints)} human frames vs {len(states)} G1 frames, using the shorter one")
@@ -244,14 +237,14 @@ def main():
     print(f"{len(states)} frames at {fps} Hz ({kind}), object {object_name} x{object_scale}, "
           f"overlay {'yes' if overlay else 'no'}")
 
-    if args.out:
+    if out:
         import imageio
 
         width, height = args.size
         model.vis.global_.offwidth, model.vis.global_.offheight = max(width, 640), max(height, 480)
         renderer = mujoco.Renderer(model, height=height, width=width)
         cam = mujoco.MjvCamera()
-        with imageio.get_writer(args.out, fps=fps, macro_block_size=1) as writer:
+        with imageio.get_writer(out, fps=fps, macro_block_size=1) as writer:
             for t in range(len(states)):
                 apply(t)
                 configure(cam, t)
@@ -260,9 +253,9 @@ def main():
                     overlay(renderer.scene, t)
                 writer.append_data(renderer.render())
         renderer.close()
-        print(f"wrote {args.out}")
+        print(f"wrote {out}")
 
-    if args.view:
+    if view:
         with mujoco.viewer.launch_passive(model, data) as viewer:
             configure(viewer.cam, 0)
             while viewer.is_running():
@@ -278,6 +271,78 @@ def main():
                             overlay(viewer.user_scn, t)
                     viewer.sync()
                     time.sleep(1.0 / (fps * args.speed))
+
+
+
+
+def source_for(motion_path, human_dir):
+    """Source clip of an exported motion: ``sub10_largebox_003_xyz..._080_080_080.pt`` -> ``sub10_largebox_003.pt``."""
+    stem = os.path.splitext(os.path.basename(motion_path))[0]
+    stem = XYZ_RE.split(stem)[0] if XYZ_RE.search(stem) else SCALE_RE.sub("", stem)
+    candidate = os.path.join(human_dir, stem + ".pt")
+    return candidate if os.path.isfile(candidate) else None
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser.add_argument("path", help="rollout.pt, [T, 630] G1 motion, [T, 591] human motion, or a folder of them")
+    parser.add_argument("--human", help="[T, 591] source clip, or a folder of source clips, to overlay on G1 motions")
+    parser.add_argument("--out", help="video file (.mp4); for a folder of motions: output folder, one .mp4 per motion")
+    parser.add_argument("--view", action="store_true", help="open the interactive MuJoCo viewer (single motion only)")
+    parser.add_argument("--overwrite", action="store_true", help="folder mode: re-render videos that already exist")
+    parser.add_argument("--no-reference", action="store_true", help="do not draw the reference of a rollout")
+    parser.add_argument("--speed", type=float, default=1.0, help="playback speed in the viewer")
+    parser.add_argument("--size", type=int, nargs=2, default=(960, 720), metavar=("W", "H"))
+    args = parser.parse_args()
+    video_endings = (".mp4", ".mov", ".mkv", ".avi", ".gif")
+
+    if os.path.isdir(args.path):
+        if args.view or not args.out:
+            parser.error("for a folder of motions use --out <output folder> (no --view)")
+        if os.path.splitext(args.out)[1].lower() in video_endings:
+            parser.error(f"--out {args.out}: for a folder of motions --out must be a folder")
+        if args.human and not os.path.isdir(args.human):
+            parser.error("--human must be a folder of source clips when the motions are a folder")
+        motions = sorted(f for f in os.listdir(args.path) if f.endswith(".pt"))
+        if not motions:
+            parser.error(f"no .pt files in {args.path}")
+        os.makedirs(args.out, exist_ok=True)
+        done, skipped, failed, no_source = 0, 0, [], []
+        for i, name in enumerate(motions, 1):
+            path = os.path.join(args.path, name)
+            out = os.path.join(args.out, os.path.splitext(name)[0] + ".mp4")
+            if os.path.exists(out) and not args.overwrite:
+                skipped += 1
+                continue
+            human = source_for(path, args.human) if args.human else None
+            if args.human and human is None:
+                no_source.append(name)
+            print(f"[{i}/{len(motions)}] {name}" + (f"  (source {os.path.basename(human)})" if human else ""))
+            try:
+                render(path, human, out, False, args)
+                done += 1
+            except Exception as error:  # keep going with the other clips
+                failed.append((name, error))
+                print(f"    failed: {error}")
+        print(f"\n{done} videos written to {args.out}, {skipped} already existed (--overwrite to redo), "
+              f"{len(failed)} failed")
+        if no_source:
+            print(f"{len(no_source)} motions without a matching source clip in {args.human} (rendered without "
+                  f"skeleton), e.g. {no_source[0]}")
+        for name, error in failed:
+            print(f"  {name}: {error}")
+        return
+
+    if not args.out and not args.view:
+        parser.error("choose --out video.mp4 and/or --view")
+    if args.out and os.path.splitext(args.out)[1].lower() not in video_endings:
+        parser.error(f"--out {args.out}: use a video file ending (.mp4, .mov, .mkv, .avi or .gif)")
+    human = args.human
+    if human and os.path.isdir(human):
+        human = source_for(args.path, human)
+        if human is None:
+            parser.error(f"no source clip for {os.path.basename(args.path)} in {args.human}")
+    render(args.path, human, args.out, args.view, args)
 
 
 if __name__ == "__main__":
