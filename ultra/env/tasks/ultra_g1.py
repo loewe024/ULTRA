@@ -473,7 +473,7 @@ class UltraG1(Humanoid_G1, Ultra):
         for idx, data_path in enumerate(motion_file):
             loaded_dict = {}
             hoi_data = torch.load(data_path)[1:]
-            loaded_dict['hoi_data'] = hoi_data.detach().to('cuda')
+            loaded_dict['hoi_data'] = hoi_data.detach().to(self.device)
 
             self.max_episode_length.append(loaded_dict['hoi_data'].shape[0])
             self.fps_data = new_fps = 60.
@@ -482,20 +482,20 @@ class UltraG1(Humanoid_G1, Ultra):
             xyz = torch.tensor(self.cfg['env'].get('sparseXYZMultiplier', [1., 1., 1.]), device=self.device, dtype=torch.float32)
             loaded_dict['root_pos'] *= xyz
             loaded_dict['root_pos_vel'] = (loaded_dict['root_pos'][1:,:].clone() - loaded_dict['root_pos'][:-1,:].clone())*self.fps_data
-            loaded_dict['root_pos_vel'] = torch.cat((torch.zeros((1, loaded_dict['root_pos_vel'].shape[-1])).to('cuda'),loaded_dict['root_pos_vel']),dim=0)
+            loaded_dict['root_pos_vel'] = torch.cat((torch.zeros((1, loaded_dict['root_pos_vel'].shape[-1])).to(self.device),loaded_dict['root_pos_vel']),dim=0)
 
             loaded_dict['root_rot'] = interp_time_series(loaded_dict['hoi_data'][:, 3:7].clone(), factor=2, mode='linear')
 
             root_rot_exp_map = torch_utils.quat_to_exp_map(loaded_dict['root_rot'])
             loaded_dict['root_rot_vel'] = (root_rot_exp_map[1:,:].clone() - root_rot_exp_map[:-1,:].clone())*self.fps_data
-            loaded_dict['root_rot_vel'] = torch.cat((torch.zeros((1, loaded_dict['root_rot_vel'].shape[-1])).to('cuda'),loaded_dict['root_rot_vel']),dim=0)
+            loaded_dict['root_rot_vel'] = torch.cat((torch.zeros((1, loaded_dict['root_rot_vel'].shape[-1])).to(self.device),loaded_dict['root_rot_vel']),dim=0)
 
             loaded_dict['dof_pos'] = interp_time_series(loaded_dict['hoi_data'][:, 9:9+153].clone(), factor=2, mode='linear')
 
             loaded_dict['dof_pos_vel'] = []
 
             loaded_dict['dof_pos_vel'] = (loaded_dict['dof_pos'][1:,:].clone() - loaded_dict['dof_pos'][:-1,:].clone())*self.fps_data
-            loaded_dict['dof_pos_vel'] = torch.cat((torch.zeros((1, loaded_dict['dof_pos_vel'].shape[-1])).to('cuda'),loaded_dict['dof_pos_vel']),dim=0)
+            loaded_dict['dof_pos_vel'] = torch.cat((torch.zeros((1, loaded_dict['dof_pos_vel'].shape[-1])).to(self.device),loaded_dict['dof_pos_vel']),dim=0)
 
             body_pos_raw = loaded_dict['hoi_data'][:, 162: 162+52*3].clone().view(self.max_episode_length[-1], 52, 3)
             loaded_dict['body_pos'] = interp_time_series(body_pos_raw, factor=2, mode='linear')
@@ -504,7 +504,7 @@ class UltraG1(Humanoid_G1, Ultra):
 
             loaded_dict['key_body_pos'] = (loaded_dict['key_body_pos'].reshape(-1, len(self._key_body_ids_gt), 3) * xyz).reshape(-1, len(self._key_body_ids_gt) * 3)
             loaded_dict['key_body_pos_vel'] = (loaded_dict['key_body_pos'][1:,:].clone() - loaded_dict['key_body_pos'][:-1,:].clone())*self.fps_data
-            loaded_dict['key_body_pos_vel'] = torch.cat((torch.zeros((1, loaded_dict['key_body_pos_vel'].shape[-1])).to('cuda'),loaded_dict['key_body_pos_vel']),dim=0)
+            loaded_dict['key_body_pos_vel'] = torch.cat((torch.zeros((1, loaded_dict['key_body_pos_vel'].shape[-1])).to(self.device),loaded_dict['key_body_pos_vel']),dim=0)
 
             loaded_dict['obj_pos'] = interp_time_series(loaded_dict['hoi_data'][:, 318:321].clone(), factor=2, mode='linear')
 
@@ -513,13 +513,13 @@ class UltraG1(Humanoid_G1, Ultra):
             if self.init_vel:
                 loaded_dict['obj_pos_vel'] = torch.cat((loaded_dict['obj_pos_vel'][:1],loaded_dict['obj_pos_vel']),dim=0)
             else:
-                loaded_dict['obj_pos_vel'] = torch.cat((torch.zeros((1, loaded_dict['obj_pos_vel'].shape[-1])).to('cuda'),loaded_dict['obj_pos_vel']),dim=0)
+                loaded_dict['obj_pos_vel'] = torch.cat((torch.zeros((1, loaded_dict['obj_pos_vel'].shape[-1])).to(self.device),loaded_dict['obj_pos_vel']),dim=0)
 
 
             loaded_dict['obj_rot'] = interp_time_series(loaded_dict['hoi_data'][:, 321:325].clone(), factor=2, mode='linear')
             obj_rot_exp_map = torch_utils.quat_to_exp_map(loaded_dict['obj_rot'])
             loaded_dict['obj_rot_vel'] = (obj_rot_exp_map[1:,:].clone() - obj_rot_exp_map[:-1,:].clone())*self.fps_data
-            loaded_dict['obj_rot_vel'] = torch.cat((torch.zeros((1, loaded_dict['obj_rot_vel'].shape[-1])).to('cuda'),loaded_dict['obj_rot_vel']),dim=0)
+            loaded_dict['obj_rot_vel'] = torch.cat((torch.zeros((1, loaded_dict['obj_rot_vel'].shape[-1])).to(self.device),loaded_dict['obj_rot_vel']),dim=0)
 
             obj_rot_extend = loaded_dict['obj_rot'].unsqueeze(1).repeat(1, self.object_points[self.object_id[idx]].shape[0], 1).view(-1, 4)
             # Scale up the relative positions of the points on the objects surface relative to the objects center)
@@ -539,7 +539,7 @@ class UltraG1(Humanoid_G1, Ultra):
             loaded_dict['human_rot'] = interp_time_series(loaded_dict['hoi_data'][:, 331+52:331+52+52*4].clone(), factor=2, mode='linear')
             human_rot_exp_map = torch_utils.quat_to_exp_map(loaded_dict['human_rot'].reshape(-1, 4)).view(-1, 52*3)
             loaded_dict['human_rot_vel'] = (human_rot_exp_map[1:,:].clone() - human_rot_exp_map[:-1,:].clone())*self.fps_data
-            loaded_dict['human_rot_vel'] = torch.cat((torch.zeros((1, loaded_dict['human_rot_vel'].shape[-1])).to('cuda'),loaded_dict['human_rot_vel']),dim=0)
+            loaded_dict['human_rot_vel'] = torch.cat((torch.zeros((1, loaded_dict['human_rot_vel'].shape[-1])).to(self.device),loaded_dict['human_rot_vel']),dim=0)
 
             loaded_dict['hoi_data'] = torch.cat((
                                                     loaded_dict['root_pos'].clone(), # 0:3
@@ -584,7 +584,7 @@ class UltraG1(Humanoid_G1, Ultra):
             hoi_refs.append(hoi_ref.cpu())
         max_length = max(self.max_episode_length) + 30
         self.num_motions = len(hoi_refs)
-        self.max_episode_length = to_torch(self.max_episode_length, dtype=torch.long) + 30
+        self.max_episode_length = to_torch(self.max_episode_length, dtype=torch.long, device=self.device) + 30
         # zero-padded to the longest motion; assembled on the CPU, then copied to the GPU once
         hoi_data = torch.zeros(self.num_motions, max_length, hoi_datas[0].shape[-1])
         hoi_refs_padded = torch.zeros(self.num_motions, max_length, hoi_refs[0].shape[-1])
