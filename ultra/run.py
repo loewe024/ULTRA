@@ -311,7 +311,8 @@ def main():
 
     # Weights & Biases logging is optional: set WANDB_DISABLED=true to turn it off,
     # and WANDB_ENTITY / WANDB_PROJECT (or wandb_entity / wandb_project in the train yaml) to route it.
-    if os.getenv("WANDB_DISABLED", "false").lower() not in ("1", "true"):
+    # With torchrun only rank 0 logs (it is also the only rank with a TensorBoard writer).
+    if os.getenv("WANDB_DISABLED", "false").lower() not in ("1", "true") and int(os.getenv("RANK", "0")) == 0:
         import wandb
         wandb.init(
             project=os.getenv("WANDB_PROJECT", cfg_train['params']['config'].get('wandb_project', 'ultra')),
