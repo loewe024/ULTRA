@@ -421,7 +421,8 @@ def compute_humanoid_reward(hoi_ref, hoi_obs, contact_buf, tar_contact_forces, k
 
 
     ref_obj_rot_extend = ref_obj_rot.unsqueeze(1).repeat(1, object_points.shape[1], 1).view(-1, 4)
-    ref_obj_points = torch_utils.quat_rotate(ref_obj_rot_extend, object_points_extend).view(obj_rot.shape[0], object_points.shape[1], 3) + ref_obj_pos.unsqueeze(1)
+    #scale the ref_obj_points up to original scale
+    ref_obj_points = torch_utils.quat_rotate(ref_obj_rot_extend, object_points_extend).view(obj_rot.shape[0], object_points.shape[1], 3)/scale + ref_obj_pos.unsqueeze(1)
 
     ref_obj_pos_vel = hoi_ref[:,320:320+3]
     ref_obj_rot_vel = hoi_ref[:,323:323+3]
@@ -449,12 +450,12 @@ def compute_humanoid_reward(hoi_ref, hoi_obs, contact_buf, tar_contact_forces, k
     weight_2 = (1 / torch.clamp((ref_ig**2).sum(dim=-1), min=0.2))
     weight_2 = weight_2 / weight_2.sum(dim=-1, keepdim=True).sum(dim=-2, keepdim=True)
 
-    eig = ((ig - ref_ig)**2).sum(dim=-1) * (weight_1 + weight_2)  
+    eig = ((ig - ref_ig*scale)**2).sum(dim=-1) * (weight_1 + weight_2)
 
     rig = torch.exp(-w_ig * (eig.sum(dim=-1).sum(dim=-1) * 0.5))
     
-    reset_ig_1 = (((ig - ref_ig)**2).sum(dim=-1).sqrt() / torch.clamp(((ref_ig)**2).sum(dim=-1).sqrt(), min=0.3)).max(dim=-1)[0].max(dim=-1)[0] > 1.0
-    reset_ig_2 = (((ig - ref_ig)**2).sum(dim=-1).sqrt() / torch.clamp((ig**2).sum(dim=-1).sqrt(), min=0.3)).max(dim=-1)[0].max(dim=-1)[0] > 1.0
+    reset_ig_1 = (((ig - scale*ref_ig)**2).sum(dim=-1).sqrt() / torch.clamp((ref_ig**2).sum(dim=-1).sqrt(), min=0.3)).max(dim=-1)[0].max(dim=-1)[0] > 1.0
+    reset_ig_2 = (((ig - scale*ref_ig)**2).sum(dim=-1).sqrt() / torch.clamp((ig**2).sum(dim=-1).sqrt(), min=0.3)).max(dim=-1)[0].max(dim=-1)[0] > 1.0
     reset_ig = torch.logical_or(reset_ig_1, reset_ig_2)
     
     ep = torch.mean(((ref_local_key_pos * scale - local_key_pos)**2).sum(dim=-1),dim=-1)
@@ -571,8 +572,8 @@ def compute_humanoid_reward(hoi_ref, hoi_obs, contact_buf, tar_contact_forces, k
     
     reward = reward_dof*contact_energy*energy*obj_energy * w1 + (rb*ro*rig) * w2 + rb*ro*rig*rcg*w3
 
-    metric_1 = (ref_key_pos - key_pos)[:, [2,5], :].norm(dim=-1).mean(dim=-1)
-    metric_2 = (obj_points - ref_obj_points).norm(dim=-1).mean(dim=-1)
+    metric_1 = (ref_key_pos*scale - key_pos)[:, [2,5], :].norm(dim=-1).mean(dim=-1)
+    metric_2 = (obj_points - ref_obj_points*scale).norm(dim=-1).mean(dim=-1)
     return reward, reset_ig, contact_reset, kinematic_reset, metric_1, metric_2
 
 def compute_humanoid_reset(reset_buf, progress_buf, obs_buf, contact_buf, rigid_body_pos,

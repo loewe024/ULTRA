@@ -826,3 +826,8 @@ Nachtrag 07.10.2026, gemessen und behoben:
 - Geretargetete Bewegung mit Isaasim visualisieren: sh ./scripts/play_dataset.sh
 - Teacher policy auf Bewegung anwenden: python ultra/run_teacher_inference.py --motion-dir InterAct/OMOMO_retarget_aug
 - Geretargetete Bewegung oder Rollout auf Teacher mit Mujoco visualisieren: python scripts/render_rollout.py output/teacher_inference/rollout.pt --out rollout.mp4
+- Tensorboard auf Eulercluster: ssh -L 8888:localhost:8888 euler    "source /cluster/project/mrl/lerzberger/miniconda3/bin/activate ultra && \
+  tensorboard --logdir ~/ULTRA/wandb/latest-run/files/output/retarget_smplx/g1_retarget_smplx/summaries --port 8888"
+- Daten auf Euler hochladen: rsync -avP g1_retarget_smplx_00014000.pth euler:/cluster/home/lerzberger/ULTRA
+- Gpus auf Euler anzeigen: sinfo -N -o "%N %P %G %t" | grep -i gpu
+- 

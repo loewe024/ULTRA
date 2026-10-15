@@ -214,7 +214,7 @@ class Humanoid_SMPLX(UltraBaseEnv):
         
         obs, obj_points = compute_obj_observations(
             root_states, tar_states, self.object_points[self.object_id[self.data_id[env_ids]]],
-            ref_obs, add_noise=not self.cfg["env"].get("retargetPositionControl", False))
+            ref_obs, self.cfg['env']['scaling'], add_noise=not self.cfg["env"].get("retargetPositionControl", False))
         return obs, obj_points
     
     def _compute_observations_iter(self, env_ids=None, delta_t=1):
@@ -238,6 +238,7 @@ class Humanoid_SMPLX(UltraBaseEnv):
             ig_all = ig_all.view(env_ids.shape[0], -1)    
             len_key_body_ids = len(self._key_body_ids)
             ref_ig = ref_obs[:, 326+len_key_body_ids*3+1+52:326+len_key_body_ids*3+1+52+len_key_body_ids*3].view(env_ids.shape[0], len_key_body_ids, 3)
+            ref_ig = ref_ig * self.cfg['env']['scaling'] # scale down to robot scale
             ref_ig_norm = ref_ig.norm(dim=-1, keepdim=True)
             ref_ig = ref_ig / (ref_ig_norm + 1e-6) * (-5 * ref_ig_norm).exp()  
             ref_ig = ref_ig.view(env_ids.shape[0], -1)          
@@ -262,6 +263,7 @@ class Humanoid_SMPLX(UltraBaseEnv):
             ig_all = ig_all.view(env_ids.shape[0], -1)    
             len_key_body_ids = len(self._key_body_ids)
             ref_ig = ref_obs[:, 326+len_key_body_ids*3+1+52:326+len_key_body_ids*3+1+52+len_key_body_ids*3].view(env_ids.shape[0], len_key_body_ids, 3)
+            ref_ig = ref_ig * self.cfg['env']['scaling']
             ref_ig_norm = ref_ig.norm(dim=-1, keepdim=True)
             ref_ig = ref_ig / (ref_ig_norm + 1e-6) * (-5 * ref_ig_norm).exp()  
             ref_ig = ref_ig.view(env_ids.shape[0], -1)          
@@ -567,7 +569,7 @@ class Humanoid_SMPLX(UltraBaseEnv):
 def _rand_vec(vec, scale=0.1):
     return vec + (2 * torch.rand_like(vec) - 1) * scale
 
-def compute_obj_observations(root_states, tar_states, object_points, ref_obs, add_noise=True):
+def compute_obj_observations(root_states, tar_states, object_points, ref_obs, scale, add_noise=True):
     perturb = _rand_vec if add_noise else lambda vec, scale: vec
     root_pos = perturb(root_states[:, 0:3], 0.01)
     root_rot = perturb(root_states[:, 3:7], 0.1)
@@ -593,7 +595,7 @@ def compute_obj_observations(root_states, tar_states, object_points, ref_obs, ad
     local_tar_rot = quat_mul(heading_rot, tar_rot)
     local_tar_rot_obs = torch_utils.quat_to_tan_norm(local_tar_rot)
 
-    _ref_obj_pos = ref_obs[:,313:316]
+    _ref_obj_pos = ref_obs[:,313:316] * scale
     diff_global_obj_pos = _ref_obj_pos - tar_pos
     diff_local_obj_pos_flat = torch_utils.quat_rotate(heading_rot, diff_global_obj_pos)
 
@@ -608,7 +610,7 @@ def compute_obj_observations(root_states, tar_states, object_points, ref_obs, ad
     local_ref_obj_rot = torch_utils.quat_mul(heading_rot, ref_obj_rot)
     local_ref_obj_rot = torch_utils.quat_to_tan_norm(local_ref_obj_rot)
 
-    ref_obj_vel = ref_obs[:, 320:323]
+    ref_obj_vel = ref_obs[:, 320:323] * scale
     diff_global_vel = ref_obj_vel - tar_vel
     diff_local_vel = torch_utils.quat_rotate(heading_rot, diff_global_vel)
 

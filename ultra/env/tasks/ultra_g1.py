@@ -469,6 +469,7 @@ class UltraG1(Humanoid_G1, Ultra):
         if type(motion_file) != type([]):
             motion_file = [motion_file]
         self.max_episode_length = []
+        scale = self.cfg['env']['scaling']
         for idx, data_path in enumerate(motion_file):
             loaded_dict = {}
             hoi_data = torch.load(data_path)[1:]
@@ -521,7 +522,8 @@ class UltraG1(Humanoid_G1, Ultra):
             loaded_dict['obj_rot_vel'] = torch.cat((torch.zeros((1, loaded_dict['obj_rot_vel'].shape[-1])).to('cuda'),loaded_dict['obj_rot_vel']),dim=0)
 
             obj_rot_extend = loaded_dict['obj_rot'].unsqueeze(1).repeat(1, self.object_points[self.object_id[idx]].shape[0], 1).view(-1, 4)
-            object_points_extend = self.object_points[self.object_id[idx]].unsqueeze(0).repeat(loaded_dict['obj_rot'].shape[0], 1, 1).view(-1, 3)
+            # Scale up the relative positions of the points on the objects surface relative to the objects center)
+            object_points_extend = (self.object_points[self.object_id[idx]]/scale).unsqueeze(0).repeat(loaded_dict['obj_rot'].shape[0], 1, 1).view(-1, 3)
             obj_points = torch_utils.quat_rotate(obj_rot_extend, object_points_extend).view(loaded_dict['obj_rot'].shape[0], self.object_points[self.object_id[idx]].shape[0], 3) + loaded_dict['obj_pos'].unsqueeze(1)
             key_body_pose = loaded_dict['key_body_pos'][:,:].clone()
             ref_ig = compute_sdf(key_body_pose.view(loaded_dict['obj_rot'].shape[0],-1,3), obj_points).view(-1, 3)
