@@ -52,11 +52,15 @@ AppLauncher.add_app_launcher_args(parser)
 args = parser.parse_args()
 # one process per GPU (torchrun); AppLauncher binds each process to cuda:LOCAL_RANK
 args.distributed = args.multi_gpu
+multi_gpu = args.multi_gpu
 if args.save_images:
     # frames are read from the viewport camera, which needs rendering in headless mode
     args.enable_cameras = True
 app_launcher = AppLauncher(args)
 simulation_app = app_launcher.app
+# AppLauncher shares args.__dict__ and sets multi_gpu=False in distributed mode (it is also a SimulationApp
+# setting for multi-GPU rendering); restore it so rl-games runs DDP on cuda:LOCAL_RANK.
+args.multi_gpu = multi_gpu
 args = finalize_args(args)
 
 from utils.config import set_np_formatting, set_seed, load_cfg  # noqa: E402
