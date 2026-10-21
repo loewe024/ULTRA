@@ -20,6 +20,8 @@ def parse_args():
     parser.add_argument("--input-dir", type=Path, required=True)
     parser.add_argument("--checkpoint", type=Path, required=True)
     parser.add_argument("--output-dir", type=Path, required=True)
+    parser.add_argument("--quality-dir", type=Path,
+                        help="per-frame retarget quality [T, 3]; default: OUTPUT_quality")
     parser.add_argument("--asset-scale", choices=("080_080_080", "100_100_100"), default="080_080_080")
     parser.add_argument("--xyz", type=float, nargs=3, action="append", metavar=("X", "Y", "Z"))
     parser.add_argument("--seed", type=int, default=1234)
@@ -32,6 +34,7 @@ def main():
     source_dir = args.input_dir.resolve()
     checkpoint = args.checkpoint.resolve()
     output_dir = args.output_dir.resolve()
+    quality_dir = (args.quality_dir or output_dir.parent / f"{output_dir.name}_quality").resolve()
     if not source_dir.is_dir():
         raise FileNotFoundError(source_dir)
     if not checkpoint.is_file():
@@ -61,7 +64,8 @@ def main():
         for xyz in variants:
             tag = scale_tag(xyz)
             destination = output_dir / f"{source.stem}_{tag}_{args.asset_scale}.pt"
-            if destination.is_file():
+            quality = quality_dir / destination.name
+            if destination.is_file() and quality.is_file():
                 print("existing:", destination, flush=True)
                 continue
 
@@ -82,6 +86,7 @@ def main():
                 "rolloutLength": 100000,
                 "sparseXYZMultiplier": list(xyz),
                 "retargetExportPath": str(destination),
+                "retargetQualityPath": str(quality),
             })
             env_path = work / "env.yaml"
             env_path.write_text(yaml.safe_dump(env_cfg, sort_keys=False))
@@ -110,7 +115,7 @@ def main():
                     command, cwd=repo, env=environment,
                     stdout=log, stderr=subprocess.STDOUT
                 )
-            if result.returncode != 0 or not destination.is_file():
+            if result.returncode != 0 or not destination.is_file() or not quality.is_file():
                 raise RuntimeError(f"export failed; see {log_path}")
             exported += 1
     print(f"exported {exported} G1 rollouts to {output_dir}", flush=True)

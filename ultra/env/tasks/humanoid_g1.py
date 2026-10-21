@@ -184,6 +184,8 @@ class Humanoid_G1(Humanoid_SMPLX):
         smooth_rewards = torch.exp(smooth_rewards / 10) * (self.progress_buf < 30) + torch.exp(smooth_rewards / 15) * (self.progress_buf >= 30)
         # print(smooth_rewards)
         self.rew_buf[:] *= smooth_rewards
+        # foot keypoint error and object point error (m), exported as retarget quality
+        self._retarget_metrics = torch.stack((metric_1, metric_2), dim=-1)
         self.contact_reset = (self.contact_reset + contact_reset) * contact_reset
         self._reset_ig = torch.logical_or(ig_reset, kinematic_reset)
 

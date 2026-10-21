@@ -417,6 +417,7 @@ class UltraG1(Humanoid_G1, Ultra):
             if not hasattr(self, "_export_frames"):
                 self._export_frames = []
             if not self._export_frames:
+                self._export_quality = []
                 self._capture_retarget_frame()
         super()._physics_step()
         if self.cfg["env"].get("retargetExportPath"):
@@ -424,8 +425,15 @@ class UltraG1(Humanoid_G1, Ultra):
 
     def post_physics_step(self):
         super().post_physics_step()
-        if self.cfg["env"].get("retargetExportPath") and bool(self.reset_buf[0]):
-            self._save_retarget_rollout()
+        if self.cfg["env"].get("retargetExportPath"):
+            self._capture_retarget_quality()
+            if bool(self.reset_buf[0]):
+                self._save_retarget_rollout()
+
+    def _capture_retarget_quality(self):
+        # [reward, foot keypoint error, object point error] of env 0 after this step
+        quality = torch.cat((self.rew_buf[0:1], self._retarget_metrics[0])).detach().cpu()
+        self._export_quality.append(quality)
 
     def _capture_retarget_frame(self):
         contact = torch.any(torch.abs(self._contact_forces[0]) > 0.1, dim=-1).float()
@@ -448,7 +456,18 @@ class UltraG1(Humanoid_G1, Ultra):
         destination.parent.mkdir(parents=True, exist_ok=True)
         torch.save(frames, destination)
         print("ULTRA_RETARGET_EXPORT", destination, tuple(frames.shape), flush=True)
+        quality_path = self.cfg["env"].get("retargetQualityPath")
+        if quality_path:
+            # Frame 0 is the initial state, quality k belongs to frame k + 1; reuse the
+            # first value for frame 0 and drop the standing frames like above.
+            quality = torch.stack(self._export_quality[:1] + self._export_quality)[30:]
+            assert quality.shape[0] == frames.shape[0], (quality.shape, frames.shape)
+            quality_path = Path(quality_path)
+            quality_path.parent.mkdir(parents=True, exist_ok=True)
+            torch.save(quality, quality_path)
+            print("ULTRA_RETARGET_QUALITY", quality_path, tuple(quality.shape), flush=True)
         self._export_frames = []
+        self._export_quality = []
 
     def _compute_reward(self, actions):
         super()._compute_reward(actions)

@@ -19,11 +19,17 @@ env:
   dataFPS: 30 # unused by the G1 tasks (reference data is consumed at one frame per policy step, 60 fps)
   dataFramesScale: 1 # 25->30fps
   ballSize: 1.
-  numObs: 4052
+  numObs: 4054
   numDoF: 29
   numDoFWrist: 3
   numDoFHand: 0
-  motion_file: InterAct/OMOMO_retarget_aug
+  motion_file: output/retarget_export_080
+  # Per-frame retarget quality written by scripts/export_retarget_smplx.py (<output>_quality/, [T, 3]:
+  # retarget reward, foot keypoint error, object point error). null = off. When set, the teacher obs gets
+  # motionQualityColumn at t+1 and t+16 appended, so numObs must be 4054, and all three columns are
+  # available to the reward as self._curr_ref_quality.
+  motionQualityDir: output/retarget_export_080_quality
+  motionQualityColumn: 0
   robotType: 'g1/g1_29dof.urdf'
   objectDensity: 25
   localRootObs: False

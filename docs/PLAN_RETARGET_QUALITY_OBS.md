@@ -164,6 +164,9 @@ self.obs_buf[...] = torch.cat(parts, dim=-1)
 ```
 Appending at the **end** keeps every existing slice valid: `_teacher_task_slice`, `_teacher_ig_slice` and the noise indices. With `motionQualityDir: null` the obs stays 4052-dim and the released `teacher_ultra_inference.pth` keeps working.
 
+### 4.7b Quality in the teacher reward (implemented, not used yet)
+In `UltraG1Retarget._compute_reward`, `self._curr_ref_quality` (`[N, 3]`, or `None` when the feature is off) holds the quality of the reference frame the reward tracks: `_next_ref_ts(env_ids, 0)`, which is the same frame as `_curr_ref_obs`. It is also passed to the teacher's `compute_humanoid_reward(..., quality=None)`. To scale the reward later, e.g. `reward = reward * quality[:, 0]` or `exp(-k * quality[:, 2])`, change it only there.
+
 ### 4.8 Optional ablation: dropout of the quality signal
 Add a config key `qualityObsDropProb`. Per reset (in `_reset_hybrid_state_init`, next to `keep_task_obs_mask`), sample `self.keep_quality_mask[env_ids]` and zero the quality dims for masked envs. This makes the teacher robust when the signal isn't available, and you can measure how much it relies on it.
 

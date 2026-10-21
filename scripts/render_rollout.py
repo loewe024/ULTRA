@@ -2,7 +2,8 @@
 
 Accepts
   * a rollout of ultra/run_teacher_inference.py (dict with observed_hoi / reference_hoi / motion_file):
-    G1 + object, the reference as translucent spheres (green: G1 bodies, orange: object centre);
+    G1 + object, the reference as translucent spheres (green: G1 bodies, orange: object centre).
+    With --human the source clip of the tracked motion is drawn on top, as for a [T, 630] motion;
   * a [T, 630] G1 motion (retargeting export, InterAct/OMOMO_retarget_aug), 60 Hz.
     With --human <[T, 591] source clip> the human skeleton is drawn on top, interpolated to 60 Hz and scaled
     like the retargeting target (0.8 x the --xyz factors encoded in the file name);
@@ -192,8 +193,8 @@ def human_track(raw, scale, to_60hz):
 def render(path, human, out, view, args):
     """Render one motion to ``out`` and/or show it in the viewer."""
     kind, states, reference, motion_file = load(path)
-    if human and kind != "g1":
-        raise ValueError("--human only works with a [T, 630] G1 motion")
+    if human and kind == "human":
+        raise ValueError("--human only works with a [T, 630] G1 motion or a teacher rollout")
     with_robot = kind != "human"
     object_name, object_scale = object_from_motion(motion_file)
     model = build_model(object_name, object_scale, with_robot)
@@ -201,21 +202,25 @@ def render(path, human, out, view, args):
     idx = qpos_indices(model, with_robot)
     fps = 30 if kind == "human" else 60
 
-    overlay = None  # per-frame drawing on top of the MuJoCo scene
+    overlays = []  # per-frame drawing on top of the MuJoCo scene
     if kind == "rollout" and not args.no_reference:
-        overlay = lambda scene, t: draw_g1_reference(scene, reference[t])  # noqa: E731
-    elif kind == "human":
+        overlays.append(lambda scene, t: draw_g1_reference(scene, reference[t]))
+    if kind == "human":
         states = states[1:]  # frame 0 of the InterMimic clips is all zeros (ULTRA drops it as well)
         joints, contact = human_track(states, 1.0, to_60hz=False)
-        overlay = lambda scene, t: draw_skeleton(scene, joints[t], contact[t])  # noqa: E731
+        overlays.append(lambda scene, t: draw_skeleton(scene, joints[t], contact[t]))
     elif human:
         raw = torch.load(human, map_location="cpu", weights_only=False).detach().float().numpy()
         joints, contact = human_track(raw, HUMAN_SCALING * xyz_from_motion(motion_file), to_60hz=True)
+        if kind == "rollout":
+            # rollout step t is recorded after the first step, i.e. at frame t + 1 of the tracked motion
+            joints, contact = joints[1:], contact[1:]
         if len(joints) != len(states):
             print(f"note: {len(joints)} human frames vs {len(states)} G1 frames, using the shorter one")
         n = min(len(joints), len(states))
         states = states[:n]
-        overlay = lambda scene, t: draw_skeleton(scene, joints[t], contact[t], alpha=0.6)  # noqa: E731
+        overlays.append(lambda scene, t: draw_skeleton(scene, joints[t], contact[t], alpha=0.6))
+    overlay = (lambda scene, t: [draw(scene, t) for draw in overlays]) if overlays else None  # noqa: E731
 
     def apply(t):
         if with_robot:
@@ -276,7 +281,11 @@ def render(path, human, out, view, args):
 
 
 def source_for(motion_path, human_dir):
-    """Source clip of an exported motion: ``sub10_largebox_003_xyz..._080_080_080.pt`` -> ``sub10_largebox_003.pt``."""
+    """Source clip of an exported motion: ``sub10_largebox_003_xyz..._080_080_080.pt`` -> ``sub10_largebox_003.pt``.
+    For a teacher rollout the motion it tracked is used."""
+    data = torch.load(motion_path, map_location="cpu", weights_only=False)
+    if isinstance(data, dict):
+        motion_path = data["motion_file"]
     stem = os.path.splitext(os.path.basename(motion_path))[0]
     stem = XYZ_RE.split(stem)[0] if XYZ_RE.search(stem) else SCALE_RE.sub("", stem)
     candidate = os.path.join(human_dir, stem + ".pt")
@@ -286,7 +295,8 @@ def source_for(motion_path, human_dir):
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("path", help="rollout.pt, [T, 630] G1 motion, [T, 591] human motion, or a folder of them")
-    parser.add_argument("--human", help="[T, 591] source clip, or a folder of source clips, to overlay on G1 motions")
+    parser.add_argument("--human", help="[T, 591] source clip, or a folder of source clips, to overlay on G1 motions "
+                                        "or teacher rollouts")
     parser.add_argument("--out", help="video file (.mp4); for a folder of motions: output folder, one .mp4 per motion")
     parser.add_argument("--view", action="store_true", help="open the interactive MuJoCo viewer (single motion only)")
     parser.add_argument("--overwrite", action="store_true", help="folder mode: re-render videos that already exist")

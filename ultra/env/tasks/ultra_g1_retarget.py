@@ -1,3 +1,4 @@
+import os
 import torch
 
 from utils.gym_torch_utils import *
@@ -64,6 +65,9 @@ def _perturb_quat(q, std):
 class UltraG1Retarget(Humanoid_G1, Ultra):
 
     def __init__(self, cfg, render_mode=None, **kwargs):
+        # read before super().__init__, which calls _load_motion
+        self._quality_dir = cfg['env'].get('motionQualityDir')
+        self._quality_col = cfg['env'].get('motionQualityColumn', 0)
         super().__init__(cfg, render_mode, **kwargs)
         self.init_dof = torch.cat([to_torch([-0.1, 0, 0.0, 0.3, -0.2, 0, -0.1, 0, 0.0, 0.3, -0.2, 0, 0, 0, 0, 
                                              0, 0, 0, 0.5], device=self.device, dtype=torch.float),
@@ -163,9 +167,12 @@ class UltraG1Retarget(Humanoid_G1, Ultra):
         if type(motion_file) != type([]):
             motion_file = [motion_file]
         self.max_episode_length = []
+        qualities = []
         for idx, data_path in enumerate(motion_file):
             loaded_dict = {}
             hoi_data = torch.load(data_path)
+            if self._quality_dir:
+                qualities.append(self._load_motion_quality(data_path, hoi_data.shape[0]))
             loaded_dict['hoi_data'] = hoi_data.detach().cpu() # .to(self.device)
             last_frame = loaded_dict['hoi_data'][-1:].clone()
             repeated_last_frame = last_frame.repeat(20, 1)  # [20, feature_dim]
@@ -239,10 +246,36 @@ class UltraG1Retarget(Humanoid_G1, Ultra):
             self.hoi_refs.append(F.pad(hoi_refs[i], pad_size, "constant", 0))
         self.hoi_data = torch.stack(self.hoi_data, dim=0).to(self.device)
         self.hoi_refs = torch.stack(self.hoi_refs, dim=0).unsqueeze(1).repeat(1, 1, 1, 1).to(self.device)
+        # [num_motions, max_length, 3]: retarget reward, foot keypoint error, object point error
+        self.ref_quality = None
+        if qualities:
+            self.ref_quality = torch.stack(
+                [F.pad(q, (0, 0, 0, max_length - q.size(0)), "constant", 0) for q in qualities], dim=0).to(self.device)
         # self.ref_reward = torch.zeros((self.hoi_refs.shape[0], self.hoi_refs.shape[1], self.hoi_refs.shape[2])).to(self.hoi_refs.device)
         # self.ref_reward[:, 0, :] = 1.0
         self.ref_index = torch.zeros((self.num_envs, )).long().to(self.hoi_refs.device)
         return
+
+    def _load_motion_quality(self, data_path, num_frames):
+        path = os.path.join(self._quality_dir, os.path.basename(data_path))
+        if not os.path.isfile(path):
+            raise FileNotFoundError(f"missing retarget quality for {data_path}: {path}")
+        quality = torch.load(path).detach().cpu().float()
+        assert quality.dim() == 2 and quality.shape[0] == num_frames, \
+            f"{path}: shape {tuple(quality.shape)}, motion has {num_frames} frames"
+        # same 20 repeated end frames as hoi_data
+        return torch.cat([quality, quality[-1:].repeat(20, 1)], dim=0)
+
+    def _next_ref_ts(self, env_ids, delta_t):
+        """Reference frame used by the observations for delta_t; delta_t = 0 is the reward frame."""
+        ts = self.progress_buf[env_ids]
+        next_ts = torch.clamp(ts + delta_t, max=self.max_episode_length[self.data_id[env_ids]]-1)
+        return torch.where(self.is_stand_still[env_ids], self.stand_still_frame[env_ids], next_ts)
+
+    def _compute_quality_obs(self, env_ids):
+        data_id = self.data_id[env_ids]
+        return torch.stack([self.ref_quality[data_id, self._next_ref_ts(env_ids, delta_t), self._quality_col]
+                            for delta_t in (1, 16)], dim=-1)
 
 
     def _setup_env_properties(self):
@@ -457,6 +490,12 @@ class UltraG1Retarget(Humanoid_G1, Ultra):
         hist_obj_rot_vel = self._hist_obs[:,81:84]
         local_vel = (self._curr_obs[:,81:84] - hist_obj_rot_vel)*self.fps_data
         obj_rot_diffacc = local_vel.view(-1, 3)*(self.progress_buf-self.start_times>2).float().unsqueeze(dim=-1)
+        # Retarget quality of the reference frame the reward tracks (same frame as _curr_ref_obs):
+        # [N, 3] = retarget reward, foot keypoint error (m), object point error (m); None when off.
+        self._curr_ref_quality = None
+        if self.ref_quality is not None:
+            all_envs = torch.arange(self.num_envs, device=self.device)
+            self._curr_ref_quality = self.ref_quality[self.data_id, self._next_ref_ts(all_envs, 0)]
         self.rew_buf[:], ig_reset, contact_reset, kinematic_reset, metric_1, metric_2 = compute_humanoid_reward(
                                                   self._curr_ref_obs,
                                                   self._curr_obs,
@@ -473,6 +512,7 @@ class UltraG1Retarget(Humanoid_G1, Ultra):
                                                   self._contact_body_ids_gt,
                                                   self._contact_body_ids,
                                                   self.progress_buf,
+                                                  self._curr_ref_quality,
                                                   )
         self.contact_reset = (self.contact_reset + contact_reset) * contact_reset
         self._reset_ig = torch.logical_or(ig_reset, kinematic_reset)
@@ -900,11 +940,17 @@ class UltraG1Retarget(Humanoid_G1, Ultra):
 
     def _compute_observations(self, env_ids=None):
         if (env_ids is None):
-            self.obs_buf[:] = torch.cat((self._compute_observations_iter(None, 1), self._compute_observations_iter(None, 16)), dim=-1)
+            obs = [self._compute_observations_iter(None, 1), self._compute_observations_iter(None, 16)]
+            if self.ref_quality is not None:
+                obs.append(self._compute_quality_obs(torch.arange(self.num_envs, device=self.device)))
+            self.obs_buf[:] = torch.cat(obs, dim=-1)
             # self.obs_buf[:] += (2 * torch.rand_like(self.obs_buf[:]) - 1) * 0.1
 
         else:
-            self.obs_buf[env_ids] = torch.cat((self._compute_observations_iter(env_ids, 1), self._compute_observations_iter(env_ids, 16)), dim=-1)
+            obs = [self._compute_observations_iter(env_ids, 1), self._compute_observations_iter(env_ids, 16)]
+            if self.ref_quality is not None:
+                obs.append(self._compute_quality_obs(env_ids))
+            self.obs_buf[env_ids] = torch.cat(obs, dim=-1)
             # self.obs_buf[env_ids] += (2 * torch.rand_like(self.obs_buf[env_ids]) - 1) * 0.1
 
         return 
@@ -954,7 +1000,9 @@ class UltraG1Retarget(Humanoid_G1, Ultra):
         self.step(self.actions)
         return
 
-def compute_humanoid_reward(hoi_ref, hoi_obs, contact_buf, tar_contact_forces, key_body_ids, w, actions, object_points, object_pos_action, object_rot_action, init_dof, num_dof_hand, _contact_body_ids_gt, _contact_body_ids, t):
+def compute_humanoid_reward(hoi_ref, hoi_obs, contact_buf, tar_contact_forces, key_body_ids, w, actions, object_points, object_pos_action, object_rot_action, init_dof, num_dof_hand, _contact_body_ids_gt, _contact_body_ids, t, quality=None):
+    # quality: [N, 3] retarget quality of the tracked reference frame (retarget reward,
+    # foot keypoint error, object point error) or None; not used by the reward yet.
     root_pos = hoi_obs[:,:3]
     root_rot = hoi_obs[:,3:3+4]
 
@@ -1056,7 +1104,7 @@ def compute_humanoid_reward(hoi_ref, hoi_obs, contact_buf, tar_contact_forces, k
     reset_ig_2 = (((ig - ref_ig)**2).sum(dim=-1).sqrt() / torch.clamp((ig**2).sum(dim=-1).sqrt(), min=0.5)).max(dim=-1)[0].max(dim=-1)[0] > 1.0
     reset_ig = torch.logical_or(reset_ig_1, reset_ig_2)
     
-    ep = torch.mean(((ref_key_pos - key_pos)**2).sum(dim=-1),dim=-1)
+    ep = torch.mean(((ref_key_pos - key_pos)**2*quality[:, 0].view(-1, 1, 1)).sum(dim=-1),dim=-1)
     rp = torch.exp(-ep*w['p'])
     weight = torch.ones_like(ref_dof_pos).to(ref_dof_pos.device)
     # weight[:, :11] = 0.5 
