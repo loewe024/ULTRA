@@ -23,13 +23,31 @@ env:
   numDoF: 29
   numDoFWrist: 3
   numDoFHand: 0
-  motion_file: output/retarget_export_080
+  motion_file: output/retarget_export_080_largebox
   # Per-frame retarget quality written by scripts/export_retarget_smplx.py (<output>_quality/, [T, 3]:
   # retarget reward, foot keypoint error, object point error). null = off. When set, the teacher obs gets
   # motionQualityColumn at t+1 and t+16 appended, so numObs must be 4054, and all three columns are
   # available to the reward as self._curr_ref_quality.
-  motionQualityDir: output/retarget_export_080_quality
+  motionQualityDir: output/retarget_export_080_largebox_quality
   motionQualityColumn: 0
+  # Added: PhysX blow-up detection (UltraG1Retarget._handle_blowups). An environment counts as exploded when any
+  # threshold is exceeded; it is then terminated and reset, its reward and obs are zeroed, a [blowup] line is
+  # printed and its last historyLen steps are saved to logDir/blowup_*.pt (at most maxDumps files per process).
+  # Added: resets in the middle of a clip spawn the robot this much higher [m], so that no foot-ground contact of
+  # the previous episode survives the teleport (cause of the blow-ups, see UltraG1Retarget._set_env_state).
+  # 0 = original behaviour.
+  resetRootLift: 0.01
+  blowup:
+    enabled: True
+    dofVel: 100.0    # rad/s, max |joint velocity|
+    bodyVel: 50.0    # m/s, max robot body speed
+    objVel: 50.0     # m/s, object speed
+    obs: 1000.0      # max |obs| (raw, before the input normalizer)
+    reward: 1000.0   # |reward| of one step
+    historyLen: 10
+    logDir: output/blowups
+    maxDumps: 50
+    maxPrintsPerStep: 5
   robotType: 'g1/g1_29dof.urdf'
   objectDensity: 25
   localRootObs: False

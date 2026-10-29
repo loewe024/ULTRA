@@ -407,6 +407,13 @@ class UltraG1Retarget(Humanoid_G1, Ultra):
         noise = _DEFAULT_NOISE_STD if self.cfg['domain_rand']['domain_rand_general'] else dict.fromkeys(_DEFAULT_NOISE_STD, 0.0)
         root_pos_new = _randn_like(root_pos, noise["root_pos"]) * (self.progress_buf[env_ids, None] < 0.5) + root_pos * (self.progress_buf[env_ids, None] > 0.5)
         # root_pos_new[..., 2:3] = (root_pos[..., 2:3] + 0.1) * (self.progress_buf[env_ids, None] < 0.5) + (root_pos[..., 2:3] + 0.01) * (self.progress_buf[env_ids, None] > 0.5)
+        # Changed (Isaac Lab port, blow-up fix): resets in the middle of a clip spawn the robot env.resetRootLift
+        # (0.01 m) higher, like the object in _reset_target. Otherwise a foot that is on the ground before and after
+        # the reset keeps its contact from the previous episode through the teleport, and PhysX yanks it back to the
+        # old contact point in the first 1 ms substep (100-500 m/s, see scripts/repro_reset_blowup.py: ~1% of such
+        # resets exploded, 0% with a 1 cm lift). Starts at frame 0 are not affected and keep the original behaviour.
+        reset_root_lift = self.cfg['env'].get('resetRootLift', 0.0)
+        root_pos_new[..., 2] += reset_root_lift * (self.progress_buf[env_ids] > 0.5).float()
         root_rot_new = _perturb_quat(root_rot, noise["root_rot"]) * (self.progress_buf[env_ids, None] < 0.5) + root_rot * (self.progress_buf[env_ids, None] > 0.5)
         root_vel_new = _randn_like(root_vel, noise["root_vel"]) * (self.progress_buf[env_ids, None] < 0.5) + root_vel * (self.progress_buf[env_ids, None] > 0.5)
         root_ang_vel_new = _randn_like(root_ang_vel, noise["root_ang_vel"]) * (self.progress_buf[env_ids, None] < 0.5) + root_ang_vel * (self.progress_buf[env_ids, None] > 0.5)
@@ -559,7 +566,122 @@ class UltraG1Retarget(Humanoid_G1, Ultra):
                                                    )
         self.obs_history_buf[self.reset_buf > 0] *= 0
         return
-    
+
+    # ---------------------------------------------------------------------------------------------------------------
+    # Blow-up detection (added after the teacher run of 2026-10-28, which died at epoch 263).
+    # In that run single environments exploded in PhysX (dof velocities and rewards up to 1e15-1e23, obs up to 1e13).
+    # The values were finite, so neither the isfinite checks nor the reset caught them; they entered the input
+    # normalizer (running_var 5e22) and the returns, and every later update was skipped as non-finite.
+    # After each policy step this
+    #   1. detects exploded environments from their physical state, obs and reward (thresholds: env.blowup in the cfg),
+    #   2. terminates and resets them, and zeroes their reward and obs so nothing reaches the normalizer or returns,
+    #   3. prints one [blowup] line per exploded environment (clip, object mass, worst dof/body, contact forces) and
+    #      saves the last `historyLen` steps of that environment to <logDir>/blowup_*.pt, to find the cause.
+    # ---------------------------------------------------------------------------------------------------------------
+    def post_physics_step(self):
+        super().post_physics_step()
+        self._handle_blowups()
+
+    def _blowup_cfg(self):
+        cfg = {"enabled": True, "dofVel": 100.0, "bodyVel": 50.0, "objVel": 50.0, "obs": 1e3, "reward": 1e3,
+               "historyLen": 10, "logDir": "output/blowups", "maxDumps": 50, "maxPrintsPerStep": 5}
+        cfg.update(self.cfg["env"].get("blowup", {}) or {})
+        return cfg
+
+    def _record_blowup_history(self, cfg):
+        """Ring buffer of the last historyLen policy steps of every environment (GPU, ~15 MB for 2048 envs)."""
+        snapshot = {
+            "progress": self.progress_buf.float().unsqueeze(-1),
+            "dof_pos": self._dof_pos,
+            "dof_vel": self._dof_vel,
+            "actions": self.actions,
+            "torques": self.torques,
+            "root_state": self._humanoid_root_states,
+            "obj_state": self._target_states[:, :13],
+            "body_vel": self._rigid_body_vel.norm(dim=-1),            # [N, bodies] m/s
+            "contact_force": self._contact_forces.norm(dim=-1),       # [N, bodies] N
+            "obj_contact_force": self._tar_contact_forces.norm(dim=-1, keepdim=True),
+            "reward": self.rew_buf.unsqueeze(-1),
+        }
+        if not hasattr(self, "_blowup_hist"):
+            n = int(cfg["historyLen"])
+            self._blowup_hist = {k: torch.zeros((n,) + v.shape, device=self.device) for k, v in snapshot.items()}
+            self._blowup_hist_pos = 0
+            self._blowup_count = 0
+            self._blowup_dumps = 0
+        pos = self._blowup_hist_pos % self._blowup_hist["reward"].shape[0]
+        for k, v in snapshot.items():
+            self._blowup_hist[k][pos] = v.detach().float()
+        self._blowup_hist_pos += 1
+
+    def _handle_blowups(self):
+        cfg = self._blowup_cfg()
+        if not cfg["enabled"]:
+            return
+        self._record_blowup_history(cfg)
+
+        dof_vel = self._dof_vel.abs().max(dim=-1)
+        body_vel = self._rigid_body_vel.norm(dim=-1).max(dim=-1)
+        obj_vel = self._target_states[:, 7:10].norm(dim=-1)
+        obs_max = self.obs_buf.abs().max(dim=-1).values
+        bad_obs = ~torch.isfinite(self.obs_buf).all(dim=-1) | (obs_max > cfg["obs"])
+        bad_rew = ~torch.isfinite(self.rew_buf) | (self.rew_buf.abs() > cfg["reward"])
+        blown = (bad_obs | bad_rew | ~torch.isfinite(dof_vel.values) | (dof_vel.values > cfg["dofVel"])
+                 | (body_vel.values > cfg["bodyVel"]) | (obj_vel > cfg["objVel"]))
+        if not blown.any():
+            return
+
+        rew_raw = self.rew_buf.clone()  # for the log below, before it is zeroed
+        # terminate and reset the exploded environments; their reward and obs must not reach the agent
+        self.reset_buf[blown] = 1
+        self._terminate_buf[blown] = 1
+        self.rew_buf[blown] = 0.0
+        self.obs_buf[blown] = 0.0
+        # same clean-up humanoid.post_physics_step does for environments that are reset
+        self.last_actions[blown] = 0.0
+        self.last_dof_vel[blown] = 0.0
+        self.last_dof_pos[blown] = 0.0
+        self.actions[blown] = 0.0
+        self.action_history_buf[blown] = 0.0
+        self.episode_length_buf[blown] = 0
+        self.last_contact_forces[blown] = 0.0
+        self.obs_history_buf[blown] = 0.0
+
+        env_ids = torch.where(blown)[0].tolist()
+        self._blowup_count += len(env_ids)
+        rank = int(os.environ.get("RANK", 0))
+        masses = self.object.root_physx_view.get_masses().view(-1)  # object mass after randomization (CPU)
+        for e in env_ids[:int(cfg["maxPrintsPerStep"])]:
+            clip = os.path.basename(self.motion_file[int(self.data_id[e])])
+            reason = ",".join(name for name, flag in (
+                ("obs", bad_obs[e]), ("reward", bad_rew[e]), ("dof_vel", dof_vel.values[e] > cfg["dofVel"]),
+                ("body_vel", body_vel.values[e] > cfg["bodyVel"]), ("obj_vel", obj_vel[e] > cfg["objVel"])) if flag)
+            print(f"[blowup] rank {rank} step {self.common_step_counter} env {e} (env%10={e % 10}) "
+                  f"total {self._blowup_count} | reason {reason} | clip {clip} "
+                  f"progress {int(self.progress_buf[e])} start {int(self.start_times[e])} "
+                  f"stand_still {bool(self.is_stand_still[e])} | obj_mass {masses[e].item():.4g} kg "
+                  f"motor_strength [{self.motor_strength[:, e].min().item():.2f}, "
+                  f"{self.motor_strength[:, e].max().item():.2f}] | "
+                  f"max dof_vel {dof_vel.values[e].item():.3g} @dof {int(dof_vel.indices[e])} "
+                  f"max body_vel {body_vel.values[e].item():.3g} @body {int(body_vel.indices[e])} "
+                  f"obj_vel {obj_vel[e].item():.3g} obj_pos {[round(v, 3) for v in self._target_states[e, :3].tolist()]} "
+                  f"max|obs| {obs_max[e].item():.3g} rew {rew_raw[e].item():.3g} | "
+                  f"max contact {self._contact_forces[e].norm(dim=-1).max().item():.3g} N "
+                  f"obj contact {self._tar_contact_forces[e].norm().item():.3g} N", flush=True)
+
+            # history of this environment, oldest step first (steps of a previous episode may appear before a reset)
+            if self._blowup_dumps < int(cfg["maxDumps"]):
+                n = self._blowup_hist["reward"].shape[0]
+                order = [(self._blowup_hist_pos + i) % n for i in range(n)]
+                os.makedirs(cfg["logDir"], exist_ok=True)
+                path = os.path.join(cfg["logDir"], f"blowup_r{rank}_step{self.common_step_counter}_env{e}.pt")
+                torch.save({"clip": clip, "env_id": e, "step": self.common_step_counter, "reason": reason,
+                            "obj_mass": masses[e].item(), "motor_strength": self.motor_strength[:, e].cpu(),
+                            "start_time": int(self.start_times[e]),
+                            "history": {k: v[order, e].cpu() for k, v in self._blowup_hist.items()}}, path)
+                self._blowup_dumps += 1
+        return
+
     def _compute_humanoid_obs(self, env_ids=None, ref_obs=None, next_ts=None, student_obs=False):
         if (env_ids is None):
             env_ids = to_torch(np.arange(self.num_envs), device=self.device, dtype=torch.long)
@@ -1104,7 +1226,8 @@ def compute_humanoid_reward(hoi_ref, hoi_obs, contact_buf, tar_contact_forces, k
     reset_ig_2 = (((ig - ref_ig)**2).sum(dim=-1).sqrt() / torch.clamp((ig**2).sum(dim=-1).sqrt(), min=0.5)).max(dim=-1)[0].max(dim=-1)[0] > 1.0
     reset_ig = torch.logical_or(reset_ig_1, reset_ig_2)
     
-    ep = torch.mean(((ref_key_pos - key_pos)**2*quality[:, 0].view(-1, 1, 1)).sum(dim=-1),dim=-1)
+    #ep = torch.mean(((ref_key_pos - key_pos)**2*quality[:, 0].view(-1, 1, 1)).sum(dim=-1),dim=-1)
+    ep = torch.mean(((ref_key_pos - key_pos)**2).sum(dim=-1),dim=-1)
     rp = torch.exp(-ep*w['p'])
     weight = torch.ones_like(ref_dof_pos).to(ref_dof_pos.device)
     # weight[:, :11] = 0.5 
@@ -1239,8 +1362,10 @@ def compute_humanoid_reset(reset_buf, progress_buf, obs_buf, contact_buf, rigid_
         contact_reset *= (progress_buf > 20 + start_times)
         invalid_obs = ~torch.isfinite(obs_buf)
         invalid_batches = torch.any(invalid_obs, dim=1)
-        if torch.any(invalid_obs):
-            raise Exception("invalid observation")
+        # Changed (blow-up handling): NaN/inf obs no longer raise and kill the whole training; these environments
+        # are terminated below and UltraG1Retarget._handle_blowups logs them, resets them and zeroes their obs.
+        # if torch.any(invalid_obs):
+        #     raise Exception("invalid observation")
 
         # For stand-still tasks, only terminate on falls and invalid observations
         # For tracking tasks, also terminate on reset_ig and contact_reset

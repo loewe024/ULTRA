@@ -297,13 +297,19 @@ class UltraAgent(common_agent.CommonAgent):
 
             self.obs, rewards, self.dones, infos = self.env_step(res_dict['actions'])
 
-            invalid_obs = ~torch.isfinite(self.obs['obs'])  # True where obs is NaN or infinite
+            # Changed (blow-up handling): besides NaN/inf, huge but finite obs (> 1e3) and rewards (> 1e3) also count
+            # as invalid. A PhysX blow-up produced obs of 1e13 and rewards of 1e23 that passed the old isfinite check,
+            # poisoned the input normalizer and the returns, and stopped all learning. The env already handles this in
+            # UltraG1Retarget._handle_blowups; this is the safety net for tasks without it.
+            invalid_obs = ~torch.isfinite(self.obs['obs']) | (self.obs['obs'].abs() > 1e3)
             invalid_batches = torch.any(invalid_obs, dim=1)  # Check if any invalid number in each batch (B, N)
+            invalid_batches |= ~torch.isfinite(rewards).all(dim=-1) | (rewards.abs() > 1e3).any(dim=-1)
 
-            if torch.any(invalid_obs):
-                print("invalid observation")
-                print(torch.where(invalid_obs))
+            if torch.any(invalid_batches):
+                print(f"invalid observation/reward in {int(invalid_batches.sum())} envs: "
+                      f"{torch.where(invalid_batches)[0][:10].tolist()}", flush=True)
                 self.obs['obs'][invalid_batches] = 0
+                rewards[invalid_batches] = 0
             # Set self.dones to True for batches with invalid observations
                 self.dones[invalid_batches] = True
                 infos['terminate'][invalid_batches] = True
@@ -584,9 +590,37 @@ class UltraAgent(common_agent.CommonAgent):
                 for param in self.model.parameters():
                     param.grad = None
 
+        """
+        # commented out for a fix that claude suggested for error invalid mu
         self.scaler.scale(loss).backward()
         # averages the gradients over the ranks in multi-GPU mode, then clips (truncate_grads) and steps
         self.trancate_gradients_and_step()
+        """
+        #suggested fix by claude
+        self.scaler.scale(loss).backward()
+        # Skip the update on every rank if any rank has a non-finite loss or gradient;
+        # clip_grad_norm_ would otherwise turn a single NaN into NaN everywhere.
+        grads = [p.grad for p in self.model.parameters() if p.grad is not None]
+        bad = (~torch.isfinite(loss) | ~torch.isfinite(torch.stack([g.norm() for g in grads]).sum())).float()
+        if self.multi_gpu:
+            dist.all_reduce(bad, op=dist.ReduceOp.MAX)
+        if bad.item() > 0:
+            with torch.no_grad():
+                rms = self.model.running_mean_std
+                log_ratio = old_action_log_probs_batch - action_log_probs
+                print(f"[nonfinite update] epoch {self.epoch_num} "
+                      f"a_loss={a_loss.item():.4g} c_loss={c_loss.item():.4g} b_loss={b_loss.item():.4g} | "
+                      f"max|log_ratio|={log_ratio.abs().max().item():.4g} max|adv|={advantage.abs().max().item():.4g} "
+                      f"max|ret|={return_batch.abs().max().item():.4g} max|obs|={obs_batch.abs().max().item():.4g} "
+                      f"max|mu|={mu.abs().max().item():.4g} | "
+                      f"rms finite: mean={torch.isfinite(rms.running_mean).all().item()} var={torch.isfinite(rms.running_var).all().item()} "
+                      f"max var={rms.running_var.max().item():.4g}", flush=True)
+            self.optimizer.zero_grad(set_to_none=True)
+        else:
+            # averages the gradients over the ranks in multi-GPU mode, then clips (truncate_grads) and steps
+            self.trancate_gradients_and_step()
+
+        
         with torch.no_grad():
             reduce_kl = not self.is_rnn
             kl_dist = torch_ext.policy_kl(mu.detach(), sigma.detach(), old_mu_batch, old_sigma_batch, reduce_kl)

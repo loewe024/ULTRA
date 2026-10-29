@@ -252,7 +252,7 @@ class CommonAgent(a2c_continuous.A2CAgent):
         return value
 
     def _actor_loss(self, old_action_log_probs_batch, action_log_probs, advantage, curr_e_clip):
-        ratio = torch.exp(old_action_log_probs_batch - action_log_probs)
+        ratio = torch.exp(torch.clamp(old_action_log_probs_batch - action_log_probs, max=20))
         surr1 = advantage * ratio
         surr2 = advantage * torch.clamp(ratio, 1.0 - curr_e_clip,
                                     1.0 + curr_e_clip)
