@@ -1,12 +1,14 @@
 import os
 import torch
 
+
 from utils.gym_torch_utils import *
 
 from utils import torch_utils
 import torch.nn.functional as F
 from env.tasks.humanoid_g1 import *
 from env.tasks.ultra import Ultra
+from env.tasks.ultra_g1 import interp_time_series  # Added: source-motion upsampling, see _load_source_object
 
 _DEFAULT_NOISE_STD = {
     "root_pos"     : 0.05,  # m
@@ -68,6 +70,8 @@ class UltraG1Retarget(Humanoid_G1, Ultra):
         # read before super().__init__, which calls _load_motion
         self._quality_dir = cfg['env'].get('motionQualityDir')
         self._quality_col = cfg['env'].get('motionQualityColumn', 0)
+        # Added: directory of the original (pre-retarget) source motions, see _load_source_object.
+        self._source_dir = cfg['env'].get('motionSourceDir')
         super().__init__(cfg, render_mode, **kwargs)
         self.init_dof = torch.cat([to_torch([-0.1, 0, 0.0, 0.3, -0.2, 0, -0.1, 0, 0.0, 0.3, -0.2, 0, 0, 0, 0, 
                                              0, 0, 0, 0.5], device=self.device, dtype=torch.float),
@@ -168,11 +172,14 @@ class UltraG1Retarget(Humanoid_G1, Ultra):
             motion_file = [motion_file]
         self.max_episode_length = []
         qualities = []
+        source_objs = []
         for idx, data_path in enumerate(motion_file):
             loaded_dict = {}
             hoi_data = torch.load(data_path)
             if self._quality_dir:
                 qualities.append(self._load_motion_quality(data_path, hoi_data.shape[0]))
+            if self._source_dir:
+                source_objs.append(self._load_source_object(data_path, hoi_data.shape[0]))
             loaded_dict['hoi_data'] = hoi_data.detach().cpu() # .to(self.device)
             last_frame = loaded_dict['hoi_data'][-1:].clone()
             repeated_last_frame = last_frame.repeat(20, 1)  # [20, feature_dim]
@@ -251,6 +258,13 @@ class UltraG1Retarget(Humanoid_G1, Ultra):
         if qualities:
             self.ref_quality = torch.stack(
                 [F.pad(q, (0, 0, 0, max_length - q.size(0)), "constant", 0) for q in qualities], dim=0).to(self.device)
+        # Added: object state of the original source motion, frame-aligned with hoi_data / hoi_refs
+        # [num_motions, max_length, 13]: pos (3), rot quat xyzw (4), lin vel (3), ang vel (3), same layout as
+        # hoi_refs[..., 71:84]; None when env.motionSourceDir is not set.
+        self.ref_src_obj = None
+        if source_objs:
+            self.ref_src_obj = torch.stack(
+                [F.pad(o, (0, 0, 0, max_length - o.size(0)), "constant", 0) for o in source_objs], dim=0).to(self.device)
         # self.ref_reward = torch.zeros((self.hoi_refs.shape[0], self.hoi_refs.shape[1], self.hoi_refs.shape[2])).to(self.hoi_refs.device)
         # self.ref_reward[:, 0, :] = 1.0
         self.ref_index = torch.zeros((self.num_envs, )).long().to(self.hoi_refs.device)
@@ -265,6 +279,43 @@ class UltraG1Retarget(Humanoid_G1, Ultra):
             f"{path}: shape {tuple(quality.shape)}, motion has {num_frames} frames"
         # same 20 repeated end frames as hoi_data
         return torch.cat([quality, quality[-1:].repeat(20, 1)], dim=0)
+
+    def _load_source_object(self, data_path, num_frames):
+        """Added: object pose/velocity of the original source motion for one exported retarget clip.
+
+        Reproduces the frame and coordinate mapping of the retarget task (UltraG1._load_motion and the
+        export in UltraG1._finish_retarget_export), so that row k belongs to the same time as frame k of the
+        exported clip:
+          - source <motionSourceDir>/<name before '_xyz'>.pt, [T, 591] at 30 Hz, object pos 318:321, quat 321:325
+          - drop source frame 0, upsample x2 linearly (align_corners) -> 2(T-1)-1 = 2T-3 frames at 60 Hz;
+            the retarget prepends 30 copies of frame 0 and the export drops them again, so export frame k
+            = upsampled frame k (checked: same length, frame 0 matches)
+          - positions scaled to the robot world by env.scaling * xyz (xyz parsed from '_xyz<x>-<y>-<z>_')
+          - velocities like the exported sim states: backward differences * 60 Hz (frame 0: zero),
+            angular velocity in the world frame from q[t] * conj(q[t-1])
+          - the same 20 repeated end frames as hoi_data
+        """
+        name = os.path.basename(data_path)
+        stem, sep, rest = name.partition('_xyz')
+        if not sep:
+            raise ValueError(f"cannot parse the source name and xyz multiplier from {name}")
+        path = os.path.join(self._source_dir, stem + '.pt')
+        if not os.path.isfile(path):
+            raise FileNotFoundError(f"missing source motion for {data_path}: {path}")
+        xyz = torch.tensor([float(v.replace('p', '.')) for v in rest.split('_')[0].split('-')], dtype=torch.float)
+        assert xyz.numel() == 3, f"{name}: cannot parse xyz multiplier"
+        source = torch.load(path).detach().cpu().float()[1:]
+        assert 2 * source.shape[0] - 1 == num_frames, \
+            f"{path}: {source.shape[0] + 1} source frames -> {2 * source.shape[0] - 1}, export has {num_frames}"
+        obj_pos = interp_time_series(source[:, 318:321], factor=2) * xyz * self.cfg['env']['scaling']
+        obj_rot = interp_time_series(source[:, 321:325], factor=2)
+        obj_rot = obj_rot / obj_rot.norm(dim=-1, keepdim=True)
+        zero = torch.zeros(1, 3)
+        obj_pos_vel = torch.cat([zero, (obj_pos[1:] - obj_pos[:-1]) * 60.], dim=0)
+        dq = torch_utils.quat_mul(obj_rot[1:], torch_utils.quat_conjugate(obj_rot[:-1]))
+        obj_rot_vel = torch.cat([zero, torch_utils.quat_to_exp_map(dq) * 60.], dim=0)
+        obj = torch.cat([obj_pos, obj_rot, obj_pos_vel, obj_rot_vel], dim=-1)
+        return torch.cat([obj, obj[-1:].repeat(20, 1)], dim=0)
 
     def _next_ref_ts(self, env_ids, delta_t):
         """Reference frame used by the observations for delta_t; delta_t = 0 is the reward frame."""
@@ -503,6 +554,12 @@ class UltraG1Retarget(Humanoid_G1, Ultra):
         if self.ref_quality is not None:
             all_envs = torch.arange(self.num_envs, device=self.device)
             self._curr_ref_quality = self.ref_quality[self.data_id, self._next_ref_ts(all_envs, 0)]
+        # Added: object state of the original source motion at the same reference frame, [N, 13] (pos, rot,
+        # lin vel, ang vel; layout of _curr_ref_obs[:, 71:84]); None when env.motionSourceDir is not set.
+        self._curr_ref_src_obj = None
+        if self.ref_src_obj is not None:
+            all_envs = torch.arange(self.num_envs, device=self.device)
+            self._curr_ref_src_obj = self.ref_src_obj[self.data_id, self._next_ref_ts(all_envs, 0)]
         self.rew_buf[:], ig_reset, contact_reset, kinematic_reset, metric_1, metric_2 = compute_humanoid_reward(
                                                   self._curr_ref_obs,
                                                   self._curr_obs,
@@ -519,7 +576,9 @@ class UltraG1Retarget(Humanoid_G1, Ultra):
                                                   self._contact_body_ids_gt,
                                                   self._contact_body_ids,
                                                   self.progress_buf,
+                                                  self.common_step_counter,
                                                   self._curr_ref_quality,
+                                                  self._curr_ref_src_obj
                                                   )
         self.contact_reset = (self.contact_reset + contact_reset) * contact_reset
         self._reset_ig = torch.logical_or(ig_reset, kinematic_reset)
@@ -1122,9 +1181,17 @@ class UltraG1Retarget(Humanoid_G1, Ultra):
         self.step(self.actions)
         return
 
-def compute_humanoid_reward(hoi_ref, hoi_obs, contact_buf, tar_contact_forces, key_body_ids, w, actions, object_points, object_pos_action, object_rot_action, init_dof, num_dof_hand, _contact_body_ids_gt, _contact_body_ids, t, quality=None):
+def compute_humanoid_reward(hoi_ref, hoi_obs, contact_buf, tar_contact_forces, key_body_ids, w, actions, object_points, object_pos_action, object_rot_action, init_dof, num_dof_hand, _contact_body_ids_gt, _contact_body_ids, t, common_step_counter, quality=None, src_obj=None):
     # quality: [N, 3] retarget quality of the tracked reference frame (retarget reward,
     # foot keypoint error, object point error) or None; not used by the reward yet.
+    # src_obj: [N, 13] object state of the original source motion at the reference frame (pos 0:3, rot 3:7,
+    # lin vel 7:10, ang vel 10:13; same layout as hoi_ref[:, 71:84]) or None; not used by the reward yet.
+
+    curriculum_start = 10000 * 32
+    curriculum_steps = 4000 * 32
+    curriculum_progress = min((common_step_counter-curriculum_start)/curriculum_steps, 1.0)
+    use_curriculum = True
+
     root_pos = hoi_obs[:,:3]
     root_rot = hoi_obs[:,3:3+4]
 
@@ -1177,6 +1244,7 @@ def compute_humanoid_reward(hoi_ref, hoi_obs, contact_buf, tar_contact_forces, k
 
     ref_obj_pos_vel = hoi_ref[:,78:81]
     ref_obj_rot_vel = hoi_ref[:,81:84]
+
     ref_key_pos = hoi_ref[:,84:201].view(-1, 39, 3)
     ref_body_pos_vel = hoi_ref[:, 357:474] #.view(-1, len_keypos, 3)
 
@@ -1209,6 +1277,12 @@ def compute_humanoid_reward(hoi_ref, hoi_obs, contact_buf, tar_contact_forces, k
 
     human_reset = (ref_key_pos - key_pos).view(-1, 39, 3).norm(dim=-1).max(dim=-1)[0] > 0.5
     object_reset = (obj_points - ref_obj_points).norm(dim=-1).max(dim=-1)[0] > 0.5
+    # If you use a curriculum to switch to the original trajectory, only reset if you are far away from the original and the retargeted object position
+    if use_curriculum and curriculum_progress > 0:
+        src_rot_extend = src_obj[:, 3:7].unsqueeze(1).repeat(1, object_points.shape[1], 1).view(-1, 4)
+        src_obj_points = torch_utils.quat_rotate(src_rot_extend, object_points_extend).view(obj_rot.shape[0], object_points.shape[1], 3) + src_obj[:, 0:3].unsqueeze(1)
+        src_object_reset = (obj_points - src_obj_points).norm(dim=-1).max(dim=-1)[0] > 0.5
+        object_reset = object_reset & src_object_reset
     kinematic_reset = torch.logical_or(human_reset, object_reset)
     
     w_ig = 1
@@ -1267,8 +1341,26 @@ def compute_humanoid_reward(hoi_ref, hoi_obs, contact_buf, tar_contact_forces, k
     eorv = torch.mean((ref_obj_rot_vel - obj_rot_vel)**2,dim=-1)
     rorv = torch.exp(-eorv*w['orv'])
     obj_energy = (object_pos_action.pow(2).mean(dim=-1).mul(-w['eg2']).exp()) * (object_rot_action.pow(2).mean(dim=-1).mul(-w['eg2']).exp())
-    ro = rop*ror*ropv*rorv*obj_energy
+    ro_ret = rop*ror*ropv*rorv
     # print('ro', rop, ror, ropv, rorv, obj_energy)
+
+    #Slowly change the target position of the object from the retargeted trajectory to the original trajectory
+    if use_curriculum:
+        w_op_src = 30
+        w_or_src = 1
+        w_opv_src = 0.1
+        e_pos = ((obj_pos - src_obj[:, 0:3])**2).sum(dim=-1) #Object position error
+        dq = torch_utils.quat_mul_norm(torch_utils.quat_inverse(src_obj[:, 3:7]), obj_rot)
+        e_rot, _ = torch_utils.quat_to_angle_axis(dq)          #Object orientation error
+        e_vel = ((obj_pos_vel - src_obj[:, 7:10])**2).sum(dim=-1)   #Velocity error
+        ro_src = torch.exp(-w_op_src * e_pos) * torch.exp(-w_or_src * e_rot.abs()) \
+                 * torch.exp(-w_opv_src * e_vel)
+        ro = ro_ret**(1 - curriculum_progress) * ro_src**curriculum_progress
+    else:
+        ro = ro_ret
+    ro = ro * obj_energy
+
+
 
     ref_contact = ref_human_contact
     ref_left_contact_hand_any = (ref_contact[:, -11] > 0.1).float()
@@ -1436,3 +1528,47 @@ def compute_obj_observations(root_states, tar_states, object_points, ref_obs):
     # diff_local_ang_vel = diff_local_ang_vel * 0
     obs = torch.cat([local_tar_vel, local_tar_ang_vel, diff_local_obj_pos_flat, diff_local_obj_rot_obs, diff_local_vel, diff_local_ang_vel], dim=-1)
     return obs, obj_points
+
+def quaternion_slerp(q0, q1, t, eps=1e-8):
+    """
+    Spherical linear interpolation between quaternions.
+
+    Args:
+        q0: (..., 4) starting quaternions
+        q1: (..., 4) target quaternions
+        t:  scalar or tensor broadcastable to (..., 1), in [0, 1]
+        eps: numerical stability
+
+    Returns:
+        (..., 4) interpolated unit quaternions
+    """
+    q0 = F.normalize(q0, dim=-1)
+    q1 = F.normalize(q1, dim=-1)
+
+    t = torch.as_tensor(t, dtype=q0.dtype, device=q0.device)
+    if t.ndim == q0.ndim - 1:
+        t = t.unsqueeze(-1)
+
+    # Quaternions q and -q represent the same rotation.
+    # Choose the shortest rotation path.
+    dot = torch.sum(q0 * q1, dim=-1, keepdim=True)
+
+    q1 = torch.where(dot < 0, -q1, q1)
+    dot = torch.abs(dot).clamp(max=1.0)
+
+    # SLERP weights
+    theta = torch.acos(dot)
+    sin_theta = torch.sin(theta)
+
+    w0 = torch.sin((1.0 - t) * theta) / sin_theta.clamp(min=eps)
+    w1 = torch.sin(t * theta) / sin_theta.clamp(min=eps)
+
+    q_slerp = w0 * q0 + w1 * q1
+
+    # Use normalized linear interpolation for nearly identical rotations.
+    q_lerp = F.normalize((1.0 - t) * q0 + t * q1, dim=-1)
+
+    return F.normalize(
+        torch.where(dot > 0.9995, q_lerp, q_slerp),
+        dim=-1
+    )
