@@ -32,8 +32,13 @@ env:
   motionQualityColumn: 0
   # Added: directory of the original source motions (<name before '_xyz'>.pt, [T, 591], 30 Hz). When set, the
   # object pos/rot/vel of the source motion, frame-aligned with motion_file and scaled to the robot world, is
-  # available to the reward as self._curr_ref_src_obj ([N, 13], layout of hoi_ref[:, 71:84]). null = off.
+  # loaded into self.ref_src_obj ([num_motions, T, 13], layout of hoi_ref[:, 71:84]) and used by the object
+  # curriculum below. null = off (no curriculum).
   motionSourceDir: InterAct/all_motions
+  # Added: object curriculum. With motionSourceDir set, the object reference (observations and reward target)
+  # is blended from the retargeted to the source object trajectory, linearly over this many epochs from the start
+  # of training (UltraG1Retarget._blend_ref_obj). The reference grasp (rig) stays on the retargeted object.
+  objCurriculumEpochs: 4000
   # Added: PhysX blow-up detection (UltraG1Retarget._handle_blowups). An environment counts as exploded when any
   # threshold is exceeded; it is then terminated and reset, its reward and obs are zeroed, a [blowup] line is
   # printed and its last historyLen steps are saved to logDir/blowup_*.pt (at most maxDumps files per process).

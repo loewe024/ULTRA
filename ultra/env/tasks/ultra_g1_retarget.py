@@ -80,6 +80,9 @@ class UltraG1Retarget(Humanoid_G1, Ultra):
                                    to_torch([0] * (self._num_actions_hand + self._num_actions_wrist), device=self.device, dtype=torch.float)])
         self.ref_hoi_obs_size = 747
         self._curr_ref_obs = torch.zeros((self.num_envs, self.ref_hoi_obs_size), device=self.device, dtype=torch.float)
+        # Added (object curriculum): retarget object reference [pos, rot, lin vel, ang vel] of the frame in
+        # _curr_ref_obs before blending, used by the reward for the grasp (see _blend_ref_obj)
+        self._curr_ref_ret_obj = torch.zeros((self.num_envs, 13), device=self.device, dtype=torch.float)
         self._hist_ref_obs = torch.zeros((self.num_envs, self.ref_hoi_obs_size), device=self.device, dtype=torch.float)
         self._curr_obs = torch.zeros((self.num_envs, self.ref_hoi_obs_size), device=self.device, dtype=torch.float)
         self._hist_obs = torch.zeros((self.num_envs, self.ref_hoi_obs_size), device=self.device, dtype=torch.float)
@@ -277,6 +280,9 @@ class UltraG1Retarget(Humanoid_G1, Ultra):
         quality = torch.load(path).detach().cpu().float()
         assert quality.dim() == 2 and quality.shape[0] == num_frames, \
             f"{path}: shape {tuple(quality.shape)}, motion has {num_frames} frames"
+        # Changed: newer exports append rig and the interaction graph points (layout above
+        # split_retarget_quality in ultra_g1.py); keep only reward, foot error, object error and rig (if present) on the GPU.
+        quality = quality[:, :4]
         # same 20 repeated end frames as hoi_data
         return torch.cat([quality, quality[-1:].repeat(20, 1)], dim=0)
 
@@ -316,6 +322,35 @@ class UltraG1Retarget(Humanoid_G1, Ultra):
         obj_rot_vel = torch.cat([zero, torch_utils.quat_to_exp_map(dq) * 60.], dim=0)
         obj = torch.cat([obj_pos, obj_rot, obj_pos_vel, obj_rot_vel], dim=-1)
         return torch.cat([obj, obj[-1:].repeat(20, 1)], dim=0)
+
+    def _obj_curriculum_progress(self):
+        """Added: progress c in [0, 1] of the object curriculum (retarget -> source object trajectory).
+
+        Linear over env.objCurriculumEpochs epochs (32 env steps per epoch = horizon_length). common_step_counter
+        starts at 10000 * 32 (Humanoid.__init__), so the curriculum starts at the first training step.
+        0 when env.motionSourceDir is not set.
+        """
+        if self.ref_src_obj is None:
+            return 0.0
+        steps = self.cfg['env'].get('objCurriculumEpochs', 4000) * 32
+        return min(max(self.common_step_counter - 10000 * 32, 0) / steps, 1.0)
+
+    def _blend_ref_obj(self, ref, env_ids, ts):
+        """Added: object curriculum, blends the object reference ref[:, 71:84] in place towards the source motion.
+
+        ref: [len(env_ids), >=84] reference rows (hoi_data layout) of frames ts. Position and velocities are
+        interpolated linearly, the rotation with slerp, all with the same c (_obj_curriculum_progress). Used for
+        the observations (ref_obs) and the reward target (_curr_ref_obs), so the policy sees the target it is
+        rewarded for. The precomputed reference interaction graph (hoi_data[:, 630:]) and the grasp term of the
+        reward stay on the retargeted object.
+        """
+        c = self._obj_curriculum_progress()
+        if c <= 0.0:
+            return
+        src = self.ref_src_obj[self.data_id[env_ids], ts]
+        ref[:, 71:74] = torch.lerp(ref[:, 71:74], src[:, 0:3], c)
+        ref[:, 74:78] = quaternion_slerp(ref[:, 74:78], src[:, 3:7], c)
+        ref[:, 78:84] = torch.lerp(ref[:, 78:84], src[:, 7:13], c)
 
     def _next_ref_ts(self, env_ids, delta_t):
         """Reference frame used by the observations for delta_t; delta_t = 0 is the reward frame."""
@@ -549,17 +584,12 @@ class UltraG1Retarget(Humanoid_G1, Ultra):
         local_vel = (self._curr_obs[:,81:84] - hist_obj_rot_vel)*self.fps_data
         obj_rot_diffacc = local_vel.view(-1, 3)*(self.progress_buf-self.start_times>2).float().unsqueeze(dim=-1)
         # Retarget quality of the reference frame the reward tracks (same frame as _curr_ref_obs):
-        # [N, 3] = retarget reward, foot keypoint error (m), object point error (m); None when off.
+        # [N, 3] = retarget reward, foot keypoint error (m), object point error (m), plus rig as column 3 for
+        # quality files exported with the interaction graph; None when off.
         self._curr_ref_quality = None
         if self.ref_quality is not None:
             all_envs = torch.arange(self.num_envs, device=self.device)
             self._curr_ref_quality = self.ref_quality[self.data_id, self._next_ref_ts(all_envs, 0)]
-        # Added: object state of the original source motion at the same reference frame, [N, 13] (pos, rot,
-        # lin vel, ang vel; layout of _curr_ref_obs[:, 71:84]); None when env.motionSourceDir is not set.
-        self._curr_ref_src_obj = None
-        if self.ref_src_obj is not None:
-            all_envs = torch.arange(self.num_envs, device=self.device)
-            self._curr_ref_src_obj = self.ref_src_obj[self.data_id, self._next_ref_ts(all_envs, 0)]
         self.rew_buf[:], ig_reset, contact_reset, kinematic_reset, metric_1, metric_2 = compute_humanoid_reward(
                                                   self._curr_ref_obs,
                                                   self._curr_obs,
@@ -576,9 +606,9 @@ class UltraG1Retarget(Humanoid_G1, Ultra):
                                                   self._contact_body_ids_gt,
                                                   self._contact_body_ids,
                                                   self.progress_buf,
-                                                  self.common_step_counter,
                                                   self._curr_ref_quality,
-                                                  self._curr_ref_src_obj
+                                                  # Added (object curriculum): unblended retarget object for the grasp
+                                                  self._curr_ref_ret_obj if self.ref_src_obj is not None else None
                                                   )
         self.contact_reset = (self.contact_reset + contact_reset) * contact_reset
         self._reset_ig = torch.logical_or(ig_reset, kinematic_reset)
@@ -1029,6 +1059,12 @@ class UltraG1Retarget(Humanoid_G1, Ultra):
             next_ts = torch.where(self.is_stand_still, self.stand_still_frame, next_ts)
             self._curr_ref_obs[next_ts<=ts] = self.hoi_data[self.data_id[next_ts<=ts], next_ts[next_ts<=ts]].clone()
             ref_obs = self.hoi_data[self.data_id[env_ids], next_ts].clone()
+            # Added: object curriculum, blend the object reference of the reward target and of the observed
+            # frame towards the source motion (see _blend_ref_obj); keep the retarget object for the grasp term
+            if self.ref_src_obj is not None:
+                self._curr_ref_ret_obj = self._curr_ref_obs[:, 71:84].clone()
+                self._blend_ref_obj(self._curr_ref_obs, env_ids, torch.where(next_ts <= ts, next_ts, ts))
+                self._blend_ref_obj(ref_obs, env_ids, next_ts)
             obs = self._compute_humanoid_obs(env_ids, ref_obs, next_ts, student_obs)
             obs_shape = obs.shape[-1]
             task_obs, obj_points = self._compute_task_obs(env_ids, ref_obs)
@@ -1072,6 +1108,13 @@ class UltraG1Retarget(Humanoid_G1, Ultra):
             next_ts = torch.where(self.is_stand_still[env_ids], self.stand_still_frame[env_ids], next_ts)
             self._curr_ref_obs[env_ids[next_ts<=ts]] = self.hoi_data[self.data_id[env_ids[next_ts<=ts]], next_ts[next_ts<=ts]].clone()
             ref_obs = self.hoi_data[self.data_id[env_ids], next_ts].clone()
+            # Added: object curriculum, same as above for a subset of envs
+            if self.ref_src_obj is not None:
+                curr_ref = self._curr_ref_obs[env_ids]
+                self._curr_ref_ret_obj[env_ids] = curr_ref[:, 71:84]
+                self._blend_ref_obj(curr_ref, env_ids, torch.where(next_ts <= ts, next_ts, ts))
+                self._curr_ref_obs[env_ids] = curr_ref
+                self._blend_ref_obj(ref_obs, env_ids, next_ts)
             obs = self._compute_humanoid_obs(env_ids, ref_obs, next_ts, student_obs)
             obs_shape = obs.shape[-1]
             task_obs, obj_points = self._compute_task_obs(env_ids, ref_obs)
@@ -1181,16 +1224,13 @@ class UltraG1Retarget(Humanoid_G1, Ultra):
         self.step(self.actions)
         return
 
-def compute_humanoid_reward(hoi_ref, hoi_obs, contact_buf, tar_contact_forces, key_body_ids, w, actions, object_points, object_pos_action, object_rot_action, init_dof, num_dof_hand, _contact_body_ids_gt, _contact_body_ids, t, common_step_counter, quality=None, src_obj=None):
+def compute_humanoid_reward(hoi_ref, hoi_obs, contact_buf, tar_contact_forces, key_body_ids, w, actions, object_points, object_pos_action, object_rot_action, init_dof, num_dof_hand, _contact_body_ids_gt, _contact_body_ids, t, quality=None, ret_obj=None):
     # quality: [N, 3] retarget quality of the tracked reference frame (retarget reward,
     # foot keypoint error, object point error) or None; not used by the reward yet.
-    # src_obj: [N, 13] object state of the original source motion at the reference frame (pos 0:3, rot 3:7,
-    # lin vel 7:10, ang vel 10:13; same layout as hoi_ref[:, 71:84]) or None; not used by the reward yet.
-
-    curriculum_start = 10000 * 32
-    curriculum_steps = 4000 * 32
-    curriculum_progress = min((common_step_counter-curriculum_start)/curriculum_steps, 1.0)
-    use_curriculum = True
+    # ret_obj: [N, 13] retargeted object reference (layout of hoi_ref[:, 71:84]) when the object curriculum is
+    # on, else None. hoi_ref[:, 71:84] is then the object reference blended towards the source motion
+    # (UltraG1Retarget._blend_ref_obj) and is tracked by the object terms and object_reset; the grasp
+    # (ref_ig -> rig, reset_ig) stays on the retargeted object so that it does not move with the curriculum.
 
     root_pos = hoi_obs[:,:3]
     root_rot = hoi_obs[:,3:3+4]
@@ -1273,16 +1313,15 @@ def compute_humanoid_reward(hoi_ref, hoi_obs, contact_buf, tar_contact_forces, k
     ref_body_rot = hoi_ref[:, 201:357].view(-1, 39*4)# torch.cat([ref_obs[:, 3:7], torch_utils.exp_map_to_quat(ref_obs[:,7:7+51*3].reshape(-1, 3)).view(-1, 51 * 4)], dim=-1)
 
 
-    ref_ig = ref_key_pos.view(-1,39,3).unsqueeze(2) - ref_obj_points.unsqueeze(1)
+    # Changed (object curriculum): the reference grasp uses the retargeted object, see ret_obj above
+    ref_grasp_obj_points = ref_obj_points
+    if ret_obj is not None:
+        ret_obj_rot_extend = ret_obj[:, 3:7].unsqueeze(1).repeat(1, object_points.shape[1], 1).view(-1, 4)
+        ref_grasp_obj_points = torch_utils.quat_rotate(ret_obj_rot_extend, object_points_extend).view(obj_rot.shape[0], object_points.shape[1], 3) + ret_obj[:, 0:3].unsqueeze(1)
+    ref_ig = ref_key_pos.view(-1,39,3).unsqueeze(2) - ref_grasp_obj_points.unsqueeze(1)
 
     human_reset = (ref_key_pos - key_pos).view(-1, 39, 3).norm(dim=-1).max(dim=-1)[0] > 0.5
     object_reset = (obj_points - ref_obj_points).norm(dim=-1).max(dim=-1)[0] > 0.5
-    # If you use a curriculum to switch to the original trajectory, only reset if you are far away from the original and the retargeted object position
-    if use_curriculum and curriculum_progress > 0:
-        src_rot_extend = src_obj[:, 3:7].unsqueeze(1).repeat(1, object_points.shape[1], 1).view(-1, 4)
-        src_obj_points = torch_utils.quat_rotate(src_rot_extend, object_points_extend).view(obj_rot.shape[0], object_points.shape[1], 3) + src_obj[:, 0:3].unsqueeze(1)
-        src_object_reset = (obj_points - src_obj_points).norm(dim=-1).max(dim=-1)[0] > 0.5
-        object_reset = object_reset & src_object_reset
     kinematic_reset = torch.logical_or(human_reset, object_reset)
     
     w_ig = 1
@@ -1341,24 +1380,8 @@ def compute_humanoid_reward(hoi_ref, hoi_obs, contact_buf, tar_contact_forces, k
     eorv = torch.mean((ref_obj_rot_vel - obj_rot_vel)**2,dim=-1)
     rorv = torch.exp(-eorv*w['orv'])
     obj_energy = (object_pos_action.pow(2).mean(dim=-1).mul(-w['eg2']).exp()) * (object_rot_action.pow(2).mean(dim=-1).mul(-w['eg2']).exp())
-    ro_ret = rop*ror*ropv*rorv
+    ro = rop*ror*ropv*rorv*obj_energy
     # print('ro', rop, ror, ropv, rorv, obj_energy)
-
-    #Slowly change the target position of the object from the retargeted trajectory to the original trajectory
-    if use_curriculum:
-        w_op_src = 30
-        w_or_src = 1
-        w_opv_src = 0.1
-        e_pos = ((obj_pos - src_obj[:, 0:3])**2).sum(dim=-1) #Object position error
-        dq = torch_utils.quat_mul_norm(torch_utils.quat_inverse(src_obj[:, 3:7]), obj_rot)
-        e_rot, _ = torch_utils.quat_to_angle_axis(dq)          #Object orientation error
-        e_vel = ((obj_pos_vel - src_obj[:, 7:10])**2).sum(dim=-1)   #Velocity error
-        ro_src = torch.exp(-w_op_src * e_pos) * torch.exp(-w_or_src * e_rot.abs()) \
-                 * torch.exp(-w_opv_src * e_vel)
-        ro = ro_ret**(1 - curriculum_progress) * ro_src**curriculum_progress
-    else:
-        ro = ro_ret
-    ro = ro * obj_energy
 
 
 

@@ -162,7 +162,7 @@ class Humanoid_G1(Humanoid_SMPLX):
         hist_obj_rot_vel = self._hist_obs[:,323:326]
         local_vel = (self._curr_obs[:,323:326] - hist_obj_rot_vel)*self.fps_data
         obj_rot_diffacc = local_vel.view(-1, 3)*(self.progress_buf-self.start_times>2).float().unsqueeze(dim=-1)
-        self.rew_buf[:], ig_reset, contact_reset, kinematic_reset, metric_1, metric_2 = compute_humanoid_reward(
+        self.rew_buf[:], ig_reset, contact_reset, kinematic_reset, metric_1, metric_2, ig_info = compute_humanoid_reward(
                                                   self._curr_ref_obs,
                                                   self._curr_obs,
                                                   self._contact_forces,
@@ -186,6 +186,9 @@ class Humanoid_G1(Humanoid_SMPLX):
         self.rew_buf[:] *= smooth_rewards
         # foot keypoint error and object point error (m), exported as retarget quality
         self._retarget_metrics = torch.stack((metric_1, metric_2), dim=-1)
+        # Added: hand-object interaction graph of this step (rig, object points, hand positions and their
+        # references in the robot world), appended per frame to the retarget quality export by UltraG1
+        self._retarget_ig = dict(zip(("rig", "obj_points", "ref_obj_points", "hand_pos", "ref_hand_pos"), ig_info))
         self.contact_reset = (self.contact_reset + contact_reset) * contact_reset
         self._reset_ig = torch.logical_or(ig_reset, kinematic_reset)
 
@@ -576,7 +579,11 @@ def compute_humanoid_reward(hoi_ref, hoi_obs, contact_buf, tar_contact_forces, k
 
     metric_1 = (ref_key_pos*scale - key_pos)[:, [2,5], :].norm(dim=-1).mean(dim=-1)
     metric_2 = (obj_points - ref_obj_points*scale).norm(dim=-1).mean(dim=-1)
-    return reward, reset_ig, contact_reset, kinematic_reset, metric_1, metric_2
+    # Added: inputs of the interaction graph term, for analysis only (does not change the reward).
+    # Everything in the robot world, i.e. the reference scaled like in eig: ig = hand_pos - obj_points,
+    # ref_ig * scale = ref_hand_pos - ref_obj_points.
+    ig_info = (rig, obj_points, ref_obj_points * scale, key_pos[:, [10, 13], :], ref_key_pos[:, [10, 13], :] * scale)
+    return reward, reset_ig, contact_reset, kinematic_reset, metric_1, metric_2, ig_info
 
 def compute_humanoid_reset(reset_buf, progress_buf, obs_buf, contact_buf, rigid_body_pos,
                            max_episode_length, enable_early_termination, termination_heights, termination_heights_init, hoi_ref, hoi_obs, start_times, rollout_length, reset_ig, contact_reset):

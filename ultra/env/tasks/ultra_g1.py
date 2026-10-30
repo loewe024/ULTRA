@@ -432,7 +432,13 @@ class UltraG1(Humanoid_G1, Ultra):
 
     def _capture_retarget_quality(self):
         # [reward, foot keypoint error, object point error] of env 0 after this step
-        quality = torch.cat((self.rew_buf[0:1], self._retarget_metrics[0])).detach().cpu()
+        # Changed: followed by the hand-object interaction graph of this step (see Humanoid_G1._compute_reward),
+        # all flattened into one row; column layout above split_retarget_quality below.
+        ig = self._retarget_ig
+        quality = torch.cat((self.rew_buf[0:1], self._retarget_metrics[0],
+                             ig["rig"][0:1],
+                             ig["hand_pos"][0].reshape(-1), ig["ref_hand_pos"][0].reshape(-1),
+                             ig["obj_points"][0].reshape(-1), ig["ref_obj_points"][0].reshape(-1))).detach().cpu()
         self._export_quality.append(quality)
 
     def _capture_retarget_frame(self):
@@ -742,6 +748,26 @@ def build_hoi_observations(root_pos, root_rot, root_vel, root_ang_vel, dof_pos, 
                      body_vel.view(-1,key_body_pos.shape[1]*key_body_pos.shape[2]), 
                      body_rot_vel_new.view(-1, 52*3)), dim=-1)
     return obs
+
+
+# Added: column layout of the exported retarget quality file <output>_quality/<clip>.pt, [T, 16 + 6P]
+# (P object points, 256); files exported before this change only have columns 0:3.
+#   0 retarget reward | 1 foot keypoint error (m) | 2 object point error (m) | 3 rig (interaction graph reward)
+#   4:10 hand_pos [2, 3] | 10:16 ref_hand_pos [2, 3] | 16:16+3P obj_points [P, 3] | 16+3P: ref_obj_points [P, 3]
+# Columns 3: are the inputs of the interaction graph term of the retarget reward: robot world, references
+# scaled like in the reward, hands = left/right rubber hand; ig = hand_pos[:, :, None] - obj_points[:, None],
+# ref_ig * scale = ref_hand_pos[:, :, None] - ref_obj_points[:, None].
+def split_retarget_quality(quality):
+    """Added: [T, 16 + 6P] quality tensor -> dict of named per-frame tensors (layout see above)."""
+    T = quality.shape[0]
+    out = {"reward": quality[:, 0], "foot_error": quality[:, 1], "object_error": quality[:, 2]}
+    if quality.shape[1] > 3:
+        points = quality[:, 16:]
+        P = points.shape[1] // 6
+        out.update(rig=quality[:, 3], hand_pos=quality[:, 4:10].view(T, 2, 3),
+                   ref_hand_pos=quality[:, 10:16].view(T, 2, 3),
+                   obj_points=points[:, :3 * P].reshape(T, P, 3), ref_obj_points=points[:, 3 * P:].reshape(T, P, 3))
+    return out
 
 
 def interp_time_series(x, factor=2, mode='linear'):
