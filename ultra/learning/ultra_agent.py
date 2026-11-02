@@ -201,6 +201,10 @@ class UltraAgent(common_agent.CommonAgent):
                         for i, name in enumerate(self.smooth_reward_names):
                             self.writer.add_scalar(f'rewards0/{name}_buf', mean_smooth_rewards[i + len(self.smooth_reward_names)], epoch_num)
 
+                    # Added: per-step mean of each tracking reward factor over this epoch's rollout (play_steps)
+                    for name, value in getattr(self, 'reward_term_means', {}).items():
+                        self.writer.add_scalar(f'reward_terms/{name}', value, epoch_num)
+
                     self.writer.add_scalar('episode_lengths/frame', mean_lengths, self.frame)
                     self.writer.add_scalar('episode_lengths/iter',  mean_lengths, epoch_num)
 
@@ -276,6 +280,7 @@ class UltraAgent(common_agent.CommonAgent):
 
         epinfos = []
         update_list = self.update_list
+        term_sums = {}  # Added: sums of infos['reward_terms'] over this rollout, see below
 
         for n in range(self.horizon_length):
 
@@ -332,6 +337,14 @@ class UltraAgent(common_agent.CommonAgent):
             all_done_indices = self.dones.nonzero(as_tuple=False)
             self.done_indices = all_done_indices[::self.num_agents]
 
+            # Added: per-term tracking reward logging (tasks that export infos['reward_terms']); mean over all
+            # envs and steps of this rollout, written to TensorBoard as reward_terms/<name>
+            if 'reward_terms' in infos:
+                for name, value in infos['reward_terms'].items():
+                    value = value.detach().float()
+                    value = value[torch.isfinite(value)]  # exploded envs (see _handle_blowups) are skipped
+                    term_sums[name] = term_sums.get(name, 0.0) + (value.mean() if value.numel() else 0.0)
+
             # Per-term smooth-reward logging; only tasks that export it (the Stage-2 teacher) provide these infos.
             has_smooth = 'smooth_reward_names' in infos
             if has_smooth and not hasattr(self, 'smooth_reward'):
@@ -362,6 +375,8 @@ class UltraAgent(common_agent.CommonAgent):
         mb_next_values = self.experience_buffer.tensor_dict['next_values']
 
         mb_rewards = self.experience_buffer.tensor_dict['rewards']
+        # Added: per-step means of the tracking reward factors of this rollout, logged in train()
+        self.reward_term_means = {name: (total / self.horizon_length).item() for name, total in term_sums.items()}
 
         mb_advs = self.discount_values(mb_fdones, mb_values, mb_rewards, mb_next_values)
         mb_returns = mb_advs + mb_values

@@ -328,10 +328,14 @@ class UltraG1Retarget(Humanoid_G1, Ultra):
 
         Linear over env.objCurriculumEpochs epochs (32 env steps per epoch = horizon_length). common_step_counter
         starts at 10000 * 32 (Humanoid.__init__), so the curriculum starts at the first training step.
+        env.objCurriculumProgress fixes c instead (evaluation, e.g. 1.0 = source trajectory).
         0 when env.motionSourceDir is not set.
         """
         if self.ref_src_obj is None:
             return 0.0
+        fixed = self.cfg['env'].get('objCurriculumProgress')
+        if fixed is not None:
+            return float(fixed)
         steps = self.cfg['env'].get('objCurriculumEpochs', 4000) * 32
         return min(max(self.common_step_counter - 10000 * 32, 0) / steps, 1.0)
 
@@ -590,7 +594,7 @@ class UltraG1Retarget(Humanoid_G1, Ultra):
         if self.ref_quality is not None:
             all_envs = torch.arange(self.num_envs, device=self.device)
             self._curr_ref_quality = self.ref_quality[self.data_id, self._next_ref_ts(all_envs, 0)]
-        self.rew_buf[:], ig_reset, contact_reset, kinematic_reset, metric_1, metric_2 = compute_humanoid_reward(
+        self.rew_buf[:], ig_reset, contact_reset, kinematic_reset, metric_1, metric_2, reward_terms = compute_humanoid_reward(
                                                   self._curr_ref_obs,
                                                   self._curr_obs,
                                                   self._contact_forces,
@@ -612,6 +616,8 @@ class UltraG1Retarget(Humanoid_G1, Ultra):
                                                   )
         self.contact_reset = (self.contact_reset + contact_reset) * contact_reset
         self._reset_ig = torch.logical_or(ig_reset, kinematic_reset)
+        # Added: per-env factors of the tracking reward, logged per epoch by UltraAgent (reward_terms/<name>)
+        self.extras['reward_terms'] = reward_terms
 
         # Temporarily disable tracking termination after pushes to allow recovery
         # Curriculum learning: gradually reduce the grace period
@@ -1431,7 +1437,15 @@ def compute_humanoid_reward(hoi_ref, hoi_obs, contact_buf, tar_contact_forces, k
     metric_1 = (ref_key_pos - key_pos).norm(dim=-1).mean(dim=-1)
     metric_2 = (obj_points - ref_obj_points).norm(dim=-1).mean(dim=-1)
     tracking_reward = reward * 1.6
-    return tracking_reward, reset_ig, contact_reset, kinematic_reset, metric_1, metric_2
+    # Added: factors of the tracking reward (each in [0, 1], reward = rb * ro * rig * rcg) and the tracking errors,
+    # for logging only; each [N]
+    reward_terms = {
+        "rp": rp, "rr": rr, "rpv": rpv, "rrv": rrv, "rb": rb,
+        "rop": rop, "ror": ror, "ropv": ropv, "rorv": rorv, "obj_energy": obj_energy, "ro": ro,
+        "rig": rig, "rcg": rcg, "tracking": tracking_reward,
+        "err_key_pos": metric_1, "err_obj_points": metric_2,
+    }
+    return tracking_reward, reset_ig, contact_reset, kinematic_reset, metric_1, metric_2, reward_terms
 
 def build_hoi_observations(root_pos, root_rot, root_vel, root_ang_vel, dof_pos, dof_vel, key_body_pos, 
                            local_root_obs, root_height_obs, dof_obs_size, target_states, target_contact_buf, contact_buf, object_points, body_rot, body_vel, body_rot_vel, _key_body_ids_gt, _contact_body_ids_gt):
