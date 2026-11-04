@@ -49,7 +49,7 @@ scripts/                     Einstiegspunkte pro Stufe (Shell + Python)
   convert_rlg_checkpoint.py  rl-games-1.1.4-Checkpoint ins 1.6-Format umschreiben
 ultra/run.py                 Einstieg für alle Stufen (AppLauncher + rl-games-Runner)
 ultra/run_distill.py         nur noch ein Alias auf run.py
-ultra/run_teacher_inference.py   Teacher auf einem Clip ausrollen und speichern
+ultra/run_teacher_inference.py   Teacher auf allen Clips einer Rollout-Config parallel ausrollen und speichern
 ultra/isaac/                 die Isaac-Lab-Schicht
   scene_cfg.py               YAML → UltraEnvCfg: Sim, Roboter, Objekt, Sensoren, Boden
   base_env.py                UltraBaseEnv(DirectRLEnv): Legacy-Tensoren, Lesen/Schreiben, Physikschritt
@@ -765,7 +765,7 @@ Weitere Eigenheiten des Teachers:
 - Zusätzliche Strafen für den Gang: Fussorientierung, Rutschen, Stolpern, Fuss- und Knieabstand, Anheben des Schwungbeins.
 - Objektmasse, -schwerpunkt und -trägheit werden pro Env einmal beim Aufbau gesetzt (`_setup_target_properties`, `ultra/env/tasks/ultra_g1_retarget.py:272`): Massenfaktor aus [0.15, 1.5], in jedem zehnten Env aus [0.001, 0.01]; die Trägheit wird mit demselben Faktor skaliert.
 
-`ultra/run_teacher_inference.py` ersetzt die `run`-Methode des Players durch einen eigenen Rollout, startet dann `run.py` mit `g1_teacher_no_dr.yaml` und speichert Zustand, Referenz und Aktionen nach `output/teacher_inference/rollout.pt`.
+`ultra/run_teacher_inference.py` ersetzt die `run`-Methode des Players durch einen eigenen Rollout, startet dann `run.py` mit `g1_teacher_no_dr.yaml` (plus den Einstellungen aus `teacher_rollout.yaml`, ein Env pro Clip) und speichert Zustand, Referenz und Aktionen pro Clip nach `<output_dir>/<clip>.pt`.
 
 ### 9.2 Student (`UltraDistillObjV2Point`)
 
@@ -824,7 +824,7 @@ Nachtrag 07.10.2026, gemessen und behoben:
 - Tensorboard starten: tensorboard --logdir=././wandb/offline-run-20261008_163034-z0jhr6fm/files/output/retarget_smplx/g1_retarget_smplx/summaries/
 - Bewegungen mit Policy retargeten: python scripts/export_retarget_smplx.py   --input-dir InterAct/OMOMO_retarget   --checkpoint output/retarget_smplx/g1_retarget_smplx/nn/g1_retarget_smplx.pth   --output-dir output/retarget_export_080   --asset-scale 080_080_080   --xyz 1 1 1
 - Geretargetete Bewegung mit Isaasim visualisieren: sh ./scripts/play_dataset.sh
-- Teacher policy auf Bewegung anwenden: python ultra/run_teacher_inference.py --motion-dir InterAct/OMOMO_retarget_aug
+- Teacher policy auf Bewegungen anwenden: Einstellungen in ultra/data/cfg/teacher_rollout.yaml, dann scripts/eval_teacher.sh
 - Geretargetete Bewegung oder Rollout auf Teacher mit Mujoco visualisieren: python scripts/render_rollout.py output/teacher_inference/rollout.pt --out rollout.mp4
 - Tensorboard auf Eulercluster: ssh -L 8888:localhost:8888 euler    "source /cluster/project/mrl/lerzberger/miniconda3/bin/activate ultra && \
   tensorboard --logdir ~/ULTRA/wandb/latest-run/files/output/retarget_smplx/g1_retarget_smplx/summaries --port 8888"

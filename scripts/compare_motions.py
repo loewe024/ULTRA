@@ -4,20 +4,36 @@ For every clip that exists in all three folders, the object pose of the last fra
 source -> retarget, source -> rollout and retarget -> rollout. Reported per pair: the share of clips whose
 final object pose lies within the position/orientation thresholds, and the mean/median final errors.
 
-Usage: python scripts/compare_motions.py [--source-dir ...] [--retarget-dir ...] [--rollout-dir ...]
-       [--pos-thresh 0.1] [--rot-thresh 15] [--csv per_clip.csv]
+The folders are set below (SOURCE_DIR, RETARGET_DIR, ROLLOUT_DIR); paths are relative to the repository root.
+
+A plot of the distribution of the final position and orientation errors (share of clips with an error up to x,
+per pair) is saved to --plot (default output/graphics/final_errors.png).
+
+Usage: python scripts/compare_motions.py [--pos-thresh 0.5] [--rot-thresh 45] [--csv per_clip.csv] [--plot png]
 """
 import argparse
 import csv
 import re
 from pathlib import Path
 
+import matplotlib
+matplotlib.use("Agg")
+import matplotlib.pyplot as plt
 import numpy as np
 import torch
+import yaml
+
+REPO = Path(__file__).resolve().parents[1]
+# Folders to compare
+SOURCE_DIR = REPO / "InterAct/all_motions"                                    # original [T, 591] motions
+RETARGET_DIR = REPO / "output/retarget_export_080_largebox"                   # retargeted [T, 630] G1 motions
+ROLLOUT_DIR = REPO / "output/teacher_rollout_motions/more_rop_with_curr_source"        # <clip>.pt teacher rollouts
 
 OBJ_POS_SRC, OBJ_ROT_SRC = slice(318, 321), slice(321, 325)  # [T, 591] source layout
 OBJ_POS_G1, OBJ_ROT_G1 = slice(71, 74), slice(74, 78)        # [T, 630] G1 layout (also first 630 of observed_hoi)
 PAIRS = [("source", "retarget"), ("source", "rollout"), ("retarget", "rollout")]
+PAIR_COLORS = ["#2a78d6", "#eb6834", "#1baf7a"]  # blue, orange, aqua
+INK, MUTED, GRID = "#0b0b0b", "#898781", "#e1e0d9"
 
 
 def load(path):
@@ -48,21 +64,62 @@ def pose_error(a, b):
     return pos_err, rot_err
 
 
+def plot_errors(rows, pos_thresh, rot_thresh, path):
+    """Empirical CDF of the final position / orientation error per pair: share of clips with an error <= x."""
+    fig, axes = plt.subplots(1, 2, figsize=(12, 4.5))
+    panels = [("pos", "final object position error [m]", pos_thresh, "{:.2f} m"),
+              ("rot", "final object orientation error [deg]", rot_thresh, "{:.0f}°")]
+    for ax, (key, xlabel, thresh, fmt) in zip(axes, panels):
+        xmax = 0.0
+        for (a, b), color in zip(PAIRS, PAIR_COLORS):
+            err = np.sort([r[f"{a}-{b}_{key}"] for r in rows])
+            share = 100 * np.arange(1, len(err) + 1) / len(err)
+            ax.step(np.concatenate([[0], err]), np.concatenate([[0], share]), where="post", lw=2, color=color,
+                    label=f"{a} -> {b} ({100 * (err < thresh).mean():.0f}% < {fmt.format(thresh)})")
+            xmax = max(xmax, np.percentile(err, 98))
+        ax.axvline(thresh, color=MUTED, lw=1, ls="--")
+        ax.text(thresh, 2, f" threshold {fmt.format(thresh)}", color=MUTED, fontsize=9, va="bottom")
+        ax.set_xlim(0, max(xmax, 1.5 * thresh))  # the long tail beyond the 98th percentile is cut off
+        ax.set_ylim(0, 100)
+        ax.set_xlabel(xlabel, color=INK)
+        ax.set_ylabel("clips with error <= x [%]", color=INK)
+        ax.grid(True, color=GRID, lw=0.8)
+        ax.set_axisbelow(True)
+        for side in ("top", "right"):
+            ax.spines[side].set_visible(False)
+        for side in ("left", "bottom"):
+            ax.spines[side].set_color(MUTED)
+        ax.tick_params(colors=MUTED, labelcolor=INK)
+        ax.legend(loc="lower right", frameon=False, fontsize=9)
+    fig.suptitle(f"Final object pose error, {len(rows)} clips ({ROLLOUT_DIR.name})", color=INK)
+    fig.tight_layout()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(path, dpi=150)
+    plt.close(fig)
+    print(f"error distribution plot in {path}")
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("--source-dir", type=Path, default=Path("InterAct/all_motions"))
-    parser.add_argument("--retarget-dir", type=Path, default=Path("output/retarget_export_080"))
-    parser.add_argument("--rollout-dir", type=Path, default=Path("output/teacher_videos"),
-                        help="folder with one <clip>/rollout.pt per clip (scripts/eval_teacher.sh output)")
     parser.add_argument("--scale", type=float, default=0.8, help="env scaling applied to the source positions")
-    parser.add_argument("--pos-thresh", type=float, default=0.5, help="goal position tolerance [m]")
-    parser.add_argument("--rot-thresh", type=float, default=45.0, help="goal orientation tolerance [deg]")
+    parser.add_argument("--pos-thresh", type=float, default=0.2, help="goal position tolerance [m]")
+    parser.add_argument("--rot-thresh", type=float, default=20.0, help="goal orientation tolerance [deg]")
     parser.add_argument("--csv", type=Path, help="optional per-clip output")
+    parser.add_argument("--plot", type=Path, default=REPO / "output/graphics/final_errors.png",
+                        help="plot of the error distributions")
     args = parser.parse_args()
+    args.source_dir, args.retarget_dir, args.rollout_dir = SOURCE_DIR, RETARGET_DIR, ROLLOUT_DIR
+    # describe the rollouts from the env.yaml run_teacher_inference.py wrote next to them
+    env_file = args.rollout_dir / "env.yaml"
+    if env_file.is_file():
+        env = yaml.safe_load(env_file.read_text())
+        progress = env["env"].get("objCurriculumProgress") if env["env"].get("motionSourceDir") else None
+        print(f"rollouts {args.rollout_dir}: checkpoint {env.get('eval', {}).get('checkpoint', '?')}, object "
+              f"trajectory {'source' if progress == 1 else 'retargeted' if not progress else f'blend {progress}'}")
 
     clips = []
-    for rollout_file in sorted(args.rollout_dir.glob("*/rollout.pt")):
-        name = rollout_file.parent.name
+    for rollout_file in sorted(args.rollout_dir.glob("*.pt")):
+        name = rollout_file.stem
         retarget_file = args.retarget_dir / f"{name}.pt"
         source_file = args.source_dir / f"{name.split('_xyz')[0]}.pt"
         if retarget_file.is_file() and source_file.is_file():
@@ -115,6 +172,8 @@ def main():
             writer.writeheader()
             writer.writerows(rows)
         print(f"per-clip errors in {args.csv}")
+
+    plot_errors(rows, args.pos_thresh, args.rot_thresh, args.plot)
 
 
 if __name__ == "__main__":

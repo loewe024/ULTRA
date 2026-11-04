@@ -151,11 +151,11 @@ For the released checkpoint, we further trained on AMASS and BONES-SEED alongsid
 <summary>Run teacher inference</summary>
 
 ```bash
-# Put one retargeted G1 .pt clip in /absolute/path/to/one_motion_dir.
-python ultra/run_teacher_inference.py --motion-dir /absolute/path/to/one_motion_dir
+# Set checkpoint, motion_dir, output_dir, ... in ultra/data/cfg/teacher_rollout.yaml, then:
+scripts/eval_teacher.sh [ultra/data/cfg/teacher_rollout.yaml]
 ```
 
-The command writes `output/teacher_inference/rollout.pt` with observed/reference states and actions from the motion. Use `--checkpoint <teacher.pth>` for another tracking teacher or change `env.teacherPolicy` in `ultra/data/cfg/g1_student_vae.yaml` for distillation.
+`ultra/run_teacher_inference.py --cfg <config>` rolls out all clips of `motion_dir` in parallel (one env per clip) and writes `<output_dir>/<clip>.pt` with observed/reference states and actions, plus `env.yaml` with the settings of the run; `scripts/eval_teacher.sh` then renders the videos with `scripts/render_rollout.py --cfg <config>`. For distillation, change `env.teacherPolicy` in `ultra/data/cfg/g1_student_vae.yaml`.
 
 </details>
 

@@ -25,6 +25,9 @@ skipped unless --overwrite). With --human <folder>, each G1 motion gets the skel
 name (``sub10_largebox_003_xyz..._080_080_080.pt`` -> ``sub10_largebox_003.pt``):
     python scripts/render_rollout.py output/retarget_export_080 --human InterAct/OMOMO_retarget \\
         --out videos/retarget_export_080
+Config mode (scripts/eval_teacher.sh): --cfg <rollout config> renders the rollouts of output_dir into
+output_dir/videos (folder mode), with the source skeleton when skeleton is true; nothing when videos is false:
+    python scripts/render_rollout.py --cfg ultra/data/cfg/teacher_rollout.yaml
 Without a display, rendering to a file needs MUJOCO_GL=egl.
 """
 
@@ -294,7 +297,10 @@ def source_for(motion_path, human_dir):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("path", help="rollout.pt, [T, 630] G1 motion, [T, 591] human motion, or a folder of them")
+    parser.add_argument("path", nargs="?",
+                        help="rollout.pt, [T, 630] G1 motion, [T, 591] human motion, or a folder of them")
+    parser.add_argument("--cfg", help="rollout config (ultra/data/cfg/teacher_rollout.yaml): render its output_dir "
+                                      "into output_dir/videos; replaces path, --out and --human")
     parser.add_argument("--human", help="[T, 591] source clip, or a folder of source clips, to overlay on G1 motions "
                                         "or teacher rollouts")
     parser.add_argument("--out", help="video file (.mp4); for a folder of motions: output folder, one .mp4 per motion")
@@ -304,6 +310,19 @@ def main():
     parser.add_argument("--speed", type=float, default=1.0, help="playback speed in the viewer")
     parser.add_argument("--size", type=int, nargs=2, default=(960, 720), metavar=("W", "H"))
     args = parser.parse_args()
+    if args.cfg:
+        if args.path or args.out or args.human or args.view:
+            parser.error("--cfg replaces path, --out, --human and --view")
+        sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "ultra"))
+        from utils.rollout_cfg import load_rollout_cfg
+        rcfg = load_rollout_cfg(args.cfg)
+        if not rcfg.videos:
+            print(f"videos: false in {args.cfg}, no videos rendered")
+            return
+        args.path, args.out = str(rcfg.output_dir), str(rcfg.output_dir / "videos")
+        args.human = str(rcfg.source_dir) if rcfg.skeleton else None
+    elif not args.path:
+        parser.error("give a path or --cfg")
     video_endings = (".mp4", ".mov", ".mkv", ".avi", ".gif")
 
     if os.path.isdir(args.path):

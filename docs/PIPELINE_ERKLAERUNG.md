@@ -33,7 +33,7 @@ Schwerpunkt: alles bis und mit Retargeting sowie alles, was Isaac Gym benutzt. D
 scripts/                     Einstiegspunkte pro Stufe (Shell + 2 Python-Skripte)
 ultra/run.py                 Stufe 1–3: Retargeting + Teacher (rl_games-Runner)
 ultra/run_distill.py         Stufe 4–5: Student (DAgger/VAE, dann RL-Finetuning)
-ultra/run_teacher_inference.py   Teacher auf einem Clip ausrollen und speichern
+ultra/run_teacher_inference.py   Teacher auf allen Clips einer Rollout-Config parallel ausrollen und speichern
 ultra/utils/config.py        CLI-Argumente, YAML laden, gymapi.SimParams
 ultra/utils/parse_task.py    Task-Klasse per Name instanziieren + VecTask-Wrapper
 ultra/utils/torch_utils.py   Quaternion-Hilfsfunktionen (Heading, exp-map, 6D)

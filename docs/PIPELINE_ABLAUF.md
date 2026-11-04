@@ -473,7 +473,7 @@ flowchart TD
         pt["scripts/play_teacher.sh ckpt.pth [num_envs]<br/>run.py --task UltraG1Retarget --test"]
         psd["scripts/play_student.sh ckpt.pth [num_envs] [task_mode] [obj_obs]<br/>run_distill.py --task UltraDistillObjV2Point --test"]
         pds["scripts/play_dataset.sh<br/>run_distill.py ... --test --play_dataset"]
-        ti["python ultra/run_teacher_inference.py --motion-dir ordner_mit_einem_clip"]
+        ti["scripts/eval_teacher.sh [teacher_rollout.yaml]<br/>run_teacher_inference.py --cfg, render_rollout.py --cfg"]
         r1["run.py ... --task UltraG1 --test --checkpoint retarget.pth<br/>(Retargeting-Policy anschauen)"]
     end
 

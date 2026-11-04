@@ -1,0 +1,26 @@
+# Settings of scripts/eval_teacher.sh (teacher rollouts: ultra/run_teacher_inference.py, then videos with
+# scripts/render_rollout.py); read by ultra/utils/rollout_cfg.py. Paths are relative to the repository root.
+
+# trained teacher checkpoint
+checkpoint: output/teacher_training/teacher_no_curr_high_rop_2/g1_teacher_00014250.pth
+# folder of the retargeted [T, 630] G1 motions; every .pt in it is rolled out
+motion_dir: output/retarget_export_080_largebox
+# output folder: <clip>.pt rollouts, env.yaml, logs/ (one Isaac log per run), videos/
+output_dir: output/teacher_rollout_motions/more_rop_no_curr_source
+# folder of the original [T, 591] source motions (30 Hz); used for the source object trajectory, the skeleton in
+# the videos
+source_dir: InterAct/all_motions
+# retarget quality folder (<motion_dir>_quality); needed for teachers trained with env.motionQualityDir
+# (numObs 4054), null for teachers without the quality observation
+quality_dir: output/retarget_export_080_largebox_quality
+# env.motionQualityColumn the teacher was trained with (only used with quality_dir)
+quality_column: 0
+
+# object trajectory given to the teacher: true = original (source) object trajectory, false = retargeted one
+use_source_object: true
+# render one video per clip into <output_dir>/videos
+videos: false
+# draw the skeleton of the source motion into the videos
+skeleton: true
+# seed of the rollout (all clips run in parallel in one Isaac Sim process, one env per clip)
+seed: 42
