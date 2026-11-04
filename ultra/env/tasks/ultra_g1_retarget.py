@@ -72,6 +72,14 @@ class UltraG1Retarget(Humanoid_G1, Ultra):
         self._quality_col = cfg['env'].get('motionQualityColumn', 0)
         # Added: directory of the original (pre-retarget) source motions, see _load_source_object.
         self._source_dir = cfg['env'].get('motionSourceDir')
+        # Added: reward scaling with the object retarget quality q, see _compute_obj_quality
+        self._quality_scale = cfg['env'].get('rewardQualityScale')
+        if self._quality_scale is not None:
+            if not self._source_dir:
+                raise ValueError("env.rewardQualityScale needs env.motionSourceDir (q compares source and retarget object)")
+            if self._quality_dir:
+                raise ValueError("env.rewardQualityScale replaces the quality observation of env.motionQualityDir, "
+                                 "set motionQualityDir to null")
         super().__init__(cfg, render_mode, **kwargs)
         self.init_dof = torch.cat([to_torch([-0.1, 0, 0.0, 0.3, -0.2, 0, -0.1, 0, 0.0, 0.3, -0.2, 0, 0, 0, 0, 
                                              0, 0, 0, 0.5], device=self.device, dtype=torch.float),
@@ -268,6 +276,10 @@ class UltraG1Retarget(Humanoid_G1, Ultra):
         if source_objs:
             self.ref_src_obj = torch.stack(
                 [F.pad(o, (0, 0, 0, max_length - o.size(0)), "constant", 0) for o in source_objs], dim=0).to(self.device)
+        # Added: [num_motions, max_length] object retarget quality q in [0, 1]; None when env.rewardQualityScale is off
+        self.ref_obj_q = None
+        if self._quality_scale is not None:
+            self.ref_obj_q = self._compute_obj_quality()
         # self.ref_reward = torch.zeros((self.hoi_refs.shape[0], self.hoi_refs.shape[1], self.hoi_refs.shape[2])).to(self.hoi_refs.device)
         # self.ref_reward[:, 0, :] = 1.0
         self.ref_index = torch.zeros((self.num_envs, )).long().to(self.hoi_refs.device)
@@ -323,6 +335,45 @@ class UltraG1Retarget(Humanoid_G1, Ultra):
         obj = torch.cat([obj_pos, obj_rot, obj_pos_vel, obj_rot_vel], dim=-1)
         return torch.cat([obj, obj[-1:].repeat(20, 1)], dim=0)
 
+    def _compute_obj_quality(self):
+        """Added: per-frame object retarget quality q in [0, 1] of all motions, [num_motions, max_length].
+
+        e_p = |source obj pos - retarget obj pos| (m), e_r = angle between source and retarget obj rotation (deg),
+        q = exp(-(e_p / sigmaPos)^2 - (e_r / sigmaRot)^2), then smoothed in time per clip: minimum over
+        +-smoothSec (the policy must leave the retargeted motion before the error shows up), then moving average
+        over smoothSec. Frames beyond a clip's length are 1.
+        """
+        cfg = self._quality_scale
+        sigma_pos, sigma_rot = float(cfg['sigmaPos']), float(cfg['sigmaRot'])
+        n_min = int(round(float(cfg['smoothSec']) * self.fps_data))
+        n_avg = n_min // 2
+        ret = self.hoi_refs[:, 0, :, 71:78]
+        src = self.ref_src_obj[..., 0:7]
+        e_p = (src[..., 0:3] - ret[..., 0:3]).norm(dim=-1)
+        q_src = src[..., 3:7] / src[..., 3:7].norm(dim=-1, keepdim=True).clamp(min=1e-8)
+        q_ret = ret[..., 3:7] / ret[..., 3:7].norm(dim=-1, keepdim=True).clamp(min=1e-8)
+        e_r = torch.rad2deg(2.0 * torch.acos((q_src * q_ret).sum(dim=-1).abs().clamp(max=1.0)))
+        q_raw = torch.exp(-(e_p / sigma_pos) ** 2 - (e_r / sigma_rot) ** 2)
+        q = torch.ones_like(q_raw)
+        for i, length in enumerate(self.max_episode_length.tolist()):
+            x = q_raw[i, :length].view(1, 1, -1)
+            if n_min > 0:
+                x = -F.max_pool1d(F.pad(-x, (n_min, n_min), mode='replicate'), 2 * n_min + 1, stride=1)
+            if n_avg > 0:
+                x = F.avg_pool1d(F.pad(x, (n_avg, n_avg), mode='replicate'), 2 * n_avg + 1, stride=1)
+            q[i, :length] = x.view(-1)
+        valid = torch.arange(q.shape[1], device=q.device)[None] < self.max_episode_length[:, None]
+        print(f"object retarget quality q (rewardQualityScale): mean {q[valid].mean():.3f}, "
+              f"frames with q < 0.5: {100 * (q[valid] < 0.5).float().mean():.1f}%")
+        return q
+
+    def _quality_scale_q(self, env_ids, delta_t):
+        """Added: effective quality q_eff = 1 - c * (1 - q) of the reference frame for delta_t (c = object
+        curriculum progress, so that nothing changes while the object reference is still the retargeted one)."""
+        c = self._obj_curriculum_progress()
+        q = self.ref_obj_q[self.data_id[env_ids], self._next_ref_ts(env_ids, delta_t)]
+        return 1.0 - c * (1.0 - q)
+
     def _obj_curriculum_progress(self):
         """Added: progress c in [0, 1] of the object curriculum (retarget -> source object trajectory).
 
@@ -363,6 +414,9 @@ class UltraG1Retarget(Humanoid_G1, Ultra):
         return torch.where(self.is_stand_still[env_ids], self.stand_still_frame[env_ids], next_ts)
 
     def _compute_quality_obs(self, env_ids):
+        # Changed: with env.rewardQualityScale the observation is q_eff (instead of a column of motionQualityDir)
+        if self.ref_obj_q is not None:
+            return torch.stack([self._quality_scale_q(env_ids, delta_t) for delta_t in (1, 16)], dim=-1)
         data_id = self.data_id[env_ids]
         return torch.stack([self.ref_quality[data_id, self._next_ref_ts(env_ids, delta_t), self._quality_col]
                             for delta_t in (1, 16)], dim=-1)
@@ -594,6 +648,12 @@ class UltraG1Retarget(Humanoid_G1, Ultra):
         if self.ref_quality is not None:
             all_envs = torch.arange(self.num_envs, device=self.device)
             self._curr_ref_quality = self.ref_quality[self.data_id, self._next_ref_ts(all_envs, 0)]
+        # Added: q_eff of the tracked reference frame and the scales of body (rp, rr) and interaction graph (rig)
+        quality_scale = None
+        if self.ref_obj_q is not None:
+            q_eff = self._quality_scale_q(torch.arange(self.num_envs, device=self.device), 0)
+            min_body, min_ig = float(self._quality_scale['minBody']), float(self._quality_scale['minIG'])
+            quality_scale = (q_eff, min_body + (1.0 - min_body) * q_eff, min_ig + (1.0 - min_ig) * q_eff)
         self.rew_buf[:], ig_reset, contact_reset, kinematic_reset, metric_1, metric_2, reward_terms = compute_humanoid_reward(
                                                   self._curr_ref_obs,
                                                   self._curr_obs,
@@ -612,7 +672,8 @@ class UltraG1Retarget(Humanoid_G1, Ultra):
                                                   self.progress_buf,
                                                   self._curr_ref_quality,
                                                   # Added (object curriculum): unblended retarget object for the grasp
-                                                  self._curr_ref_ret_obj if self.ref_src_obj is not None else None
+                                                  self._curr_ref_ret_obj if self.ref_src_obj is not None else None,
+                                                  quality_scale
                                                   )
         self.contact_reset = (self.contact_reset + contact_reset) * contact_reset
         self._reset_ig = torch.logical_or(ig_reset, kinematic_reset)
@@ -1171,14 +1232,14 @@ class UltraG1Retarget(Humanoid_G1, Ultra):
     def _compute_observations(self, env_ids=None):
         if (env_ids is None):
             obs = [self._compute_observations_iter(None, 1), self._compute_observations_iter(None, 16)]
-            if self.ref_quality is not None:
+            if self.ref_quality is not None or self.ref_obj_q is not None:
                 obs.append(self._compute_quality_obs(torch.arange(self.num_envs, device=self.device)))
             self.obs_buf[:] = torch.cat(obs, dim=-1)
             # self.obs_buf[:] += (2 * torch.rand_like(self.obs_buf[:]) - 1) * 0.1
 
         else:
             obs = [self._compute_observations_iter(env_ids, 1), self._compute_observations_iter(env_ids, 16)]
-            if self.ref_quality is not None:
+            if self.ref_quality is not None or self.ref_obj_q is not None:
                 obs.append(self._compute_quality_obs(env_ids))
             self.obs_buf[env_ids] = torch.cat(obs, dim=-1)
             # self.obs_buf[env_ids] += (2 * torch.rand_like(self.obs_buf[env_ids]) - 1) * 0.1
@@ -1230,13 +1291,20 @@ class UltraG1Retarget(Humanoid_G1, Ultra):
         self.step(self.actions)
         return
 
-def compute_humanoid_reward(hoi_ref, hoi_obs, contact_buf, tar_contact_forces, key_body_ids, w, actions, object_points, object_pos_action, object_rot_action, init_dof, num_dof_hand, _contact_body_ids_gt, _contact_body_ids, t, quality=None, ret_obj=None):
+def compute_humanoid_reward(hoi_ref, hoi_obs, contact_buf, tar_contact_forces, key_body_ids, w, actions, object_points, object_pos_action, object_rot_action, init_dof, num_dof_hand, _contact_body_ids_gt, _contact_body_ids, t, quality=None, ret_obj=None, quality_scale=None):
     # quality: [N, 3] retarget quality of the tracked reference frame (retarget reward,
     # foot keypoint error, object point error) or None; not used by the reward yet.
     # ret_obj: [N, 13] retargeted object reference (layout of hoi_ref[:, 71:84]) when the object curriculum is
     # on, else None. hoi_ref[:, 71:84] is then the object reference blended towards the source motion
     # (UltraG1Retarget._blend_ref_obj) and is tracked by the object terms and object_reset; the grasp
     # (ref_ig -> rig, reset_ig) stays on the retargeted object so that it does not move with the curriculum.
+    # quality_scale: None or (q_eff, s_body, s_ig), each [N] (UltraG1Retarget._compute_reward, env.rewardQualityScale):
+    # the exponent coefficients of rp, rr are scaled by s_body and the one of rig by s_ig, the key body reset
+    # threshold grows from 0.5 m to 1.0 m as q_eff -> 0, and reset_ig is only active for q_eff > 0.5.
+    if quality_scale is not None:
+        q_eff, s_body, s_ig = quality_scale
+    else:
+        q_eff = s_body = s_ig = torch.ones(hoi_obs.shape[0], device=hoi_obs.device)
 
     root_pos = hoi_obs[:,:3]
     root_rot = hoi_obs[:,3:3+4]
@@ -1326,7 +1394,8 @@ def compute_humanoid_reward(hoi_ref, hoi_obs, contact_buf, tar_contact_forces, k
         ref_grasp_obj_points = torch_utils.quat_rotate(ret_obj_rot_extend, object_points_extend).view(obj_rot.shape[0], object_points.shape[1], 3) + ret_obj[:, 0:3].unsqueeze(1)
     ref_ig = ref_key_pos.view(-1,39,3).unsqueeze(2) - ref_grasp_obj_points.unsqueeze(1)
 
-    human_reset = (ref_key_pos - key_pos).view(-1, 39, 3).norm(dim=-1).max(dim=-1)[0] > 0.5
+    # Changed (rewardQualityScale): threshold 0.5 m + 0.5 m * (1 - q_eff), 0.5 m without the scaling
+    human_reset = (ref_key_pos - key_pos).view(-1, 39, 3).norm(dim=-1).max(dim=-1)[0] > 0.5 + 0.5 * (1.0 - q_eff)
     object_reset = (obj_points - ref_obj_points).norm(dim=-1).max(dim=-1)[0] > 0.5
     kinematic_reset = torch.logical_or(human_reset, object_reset)
     
@@ -1339,20 +1408,22 @@ def compute_humanoid_reward(hoi_ref, hoi_obs, contact_buf, tar_contact_forces, k
 
     eig = ((ig - ref_ig)**2).sum(dim=-1) * (weight_1 + weight_2)  
 
-    rig = torch.exp(-w_ig * (eig.sum(dim=-1).sum(dim=-1) * 0.5))
+    rig = torch.exp(-w_ig * s_ig * (eig.sum(dim=-1).sum(dim=-1) * 0.5))  # Changed: * s_ig
     
     reset_ig_1 = (((ig - ref_ig)**2).sum(dim=-1).sqrt() / torch.clamp(((ref_ig)**2).sum(dim=-1).sqrt(), min=0.5)).max(dim=-1)[0].max(dim=-1)[0] > 1.0
     reset_ig_2 = (((ig - ref_ig)**2).sum(dim=-1).sqrt() / torch.clamp((ig**2).sum(dim=-1).sqrt(), min=0.5)).max(dim=-1)[0].max(dim=-1)[0] > 1.0
     reset_ig = torch.logical_or(reset_ig_1, reset_ig_2)
+    if quality_scale is not None:  # Added: the reference grasp is not tracked where the retarget is bad
+        reset_ig = torch.logical_and(reset_ig, q_eff > 0.5)
     
     #ep = torch.mean(((ref_key_pos - key_pos)**2*quality[:, 0].view(-1, 1, 1)).sum(dim=-1),dim=-1)
     ep = torch.mean(((ref_key_pos - key_pos)**2).sum(dim=-1),dim=-1)
-    rp = torch.exp(-ep*w['p'])
+    rp = torch.exp(-ep*w['p']*s_body)  # Changed: * s_body
     weight = torch.ones_like(ref_dof_pos).to(ref_dof_pos.device)
     # weight[:, :11] = 0.5 
     er = torch.mean(((ref_dof_pos - dof_pos)**2) * weight,dim=-1)
 
-    rr = torch.exp(-er*w['r'])
+    rr = torch.exp(-er*w['r']*s_body)  # Changed: * s_body
     
     # body pos vel reward
     epv = torch.mean((ref_body_pos_vel - body_pos_vel)**2,dim=-1)
@@ -1445,6 +1516,8 @@ def compute_humanoid_reward(hoi_ref, hoi_obs, contact_buf, tar_contact_forces, k
         "rig": rig, "rcg": rcg, "tracking": tracking_reward,
         "err_key_pos": metric_1, "err_obj_points": metric_2,
     }
+    if quality_scale is not None:
+        reward_terms.update(q_eff=q_eff, scale_body=s_body, scale_ig=s_ig)
     return tracking_reward, reset_ig, contact_reset, kinematic_reset, metric_1, metric_2, reward_terms
 
 def build_hoi_observations(root_pos, root_rot, root_vel, root_ang_vel, dof_pos, dof_vel, key_body_pos, 

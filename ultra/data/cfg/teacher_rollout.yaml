@@ -11,7 +11,8 @@ output_dir: output/teacher_rollout_motions/more_rop_no_curr_source
 # the videos
 source_dir: InterAct/all_motions
 # retarget quality folder (<motion_dir>_quality); needed for teachers trained with env.motionQualityDir
-# (numObs 4054), null for teachers without the quality observation
+# (numObs 4054), null for teachers without the quality observation and for teachers trained with
+# env.rewardQualityScale (taken from g1_teacher.yaml, its q is then the quality observation)
 quality_dir: output/retarget_export_080_largebox_quality
 # env.motionQualityColumn the teacher was trained with (only used with quality_dir)
 quality_column: 0

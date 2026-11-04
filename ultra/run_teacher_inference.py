@@ -87,6 +87,20 @@ def build_env_cfg(rcfg):
     """Env config of the run: g1_teacher_no_dr.yaml (no randomization, start at frame 0) plus the settings of the
     rollout config, the reward weights of g1_teacher.yaml and the motion folder / checkpoint as log."""
     cfg_env = yaml.safe_load((repo / "ultra/data/cfg/g1_teacher_no_dr.yaml").read_text())
+    # The current g1_teacher.yaml need not be the one the checkpoint was trained with, hence ENV_CFG_HEADER.
+    train_cfg = repo / "ultra/data/cfg/g1_teacher.yaml"
+    cfg_train_env = yaml.safe_load(train_cfg.read_text())
+    quality_scale = cfg_train_env["env"].get("rewardQualityScale")
+    if quality_scale is not None:
+        # its q_eff is the quality observation (instead of quality_dir) and needs the source object; with the
+        # retargeted object trajectory c = 0, so q_eff = 1 as at the start of the training curriculum
+        if rcfg.quality_dir is not None:
+            config_error(f"{train_cfg} has rewardQualityScale, which replaces the quality observation: "
+                         f"set quality_dir: null in {rcfg.path}")
+        cfg_env["env"]["rewardQualityScale"] = quality_scale
+        cfg_env["env"]["numObs"] += 2  # q_eff at t+1 and t+16
+        cfg_env["env"]["motionSourceDir"] = str(rcfg.source_dir)
+        cfg_env["env"]["objCurriculumProgress"] = 1.0 if rcfg.use_source_object else 0.0
     if rcfg.quality_dir is not None:
         cfg_env["env"]["motionQualityDir"] = str(rcfg.quality_dir)
         cfg_env["env"]["motionQualityColumn"] = rcfg.quality_column
@@ -94,9 +108,6 @@ def build_env_cfg(rcfg):
     if rcfg.use_source_object:
         cfg_env["env"]["motionSourceDir"] = str(rcfg.source_dir)
         cfg_env["env"]["objCurriculumProgress"] = 1.0
-    # The current g1_teacher.yaml need not be the one the checkpoint was trained with, hence ENV_CFG_HEADER.
-    train_cfg = repo / "ultra/data/cfg/g1_teacher.yaml"
-    cfg_train_env = yaml.safe_load(train_cfg.read_text())
     cfg_env["env"]["rewardWeights"] = cfg_train_env["env"]["rewardWeights"]
     cfg_env["smooth_rewards"] = cfg_train_env["smooth_rewards"]
     # only a record: the clips of the run are passed with --motion_file
@@ -110,7 +121,7 @@ def check_obs_size(rcfg, cfg_env):
     ckpt_obs = model["running_mean_std.running_mean"].shape[0] if "running_mean_std.running_mean" in model \
         else model["a2c_network.actor_mlp.0.weight"].shape[1]
     if ckpt_obs != cfg_env["env"]["numObs"]:
-        hint = " (trained with the retarget quality observation: set quality_dir)" \
+        hint = " (trained with a quality observation: set quality_dir or rewardQualityScale in g1_teacher.yaml)" \
             if ckpt_obs == cfg_env["env"]["numObs"] + 2 else ""
         config_error(f"{rcfg.checkpoint} expects {ckpt_obs} observations, {rcfg.path} gives "
                          f"{cfg_env['env']['numObs']}{hint}")

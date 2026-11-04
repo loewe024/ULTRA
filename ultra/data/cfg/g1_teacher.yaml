@@ -27,7 +27,8 @@ env:
   # Per-frame retarget quality written by scripts/export_retarget_smplx.py (<output>_quality/, [T, 3]:
   # retarget reward, foot keypoint error, object point error). null = off. When set, the teacher obs gets
   # motionQualityColumn at t+1 and t+16 appended, so numObs must be 4054, and all three columns are
-  # available to the reward as self._curr_ref_quality.
+  # available to the reward as self._curr_ref_quality. Must be null with rewardQualityScale (its q_eff is then the
+  # quality observation).
   motionQualityDir: output/retarget_export_080_largebox_quality
   motionQualityColumn: 0
   # Added: directory of the original source motions (<name before '_xyz'>.pt, [T, 591], 30 Hz). When set, the
@@ -39,6 +40,21 @@ env:
   # is blended from the retargeted to the source object trajectory, linearly over this many epochs from the start
   # of training (UltraG1Retarget._blend_ref_obj). The reference grasp (rig) stays on the retargeted object.
   objCurriculumEpochs: 4000
+  # Added: reward scaling with the object retarget quality (UltraG1Retarget._compute_obj_quality). Per frame
+  # q = exp(-(e_p / sigmaPos)^2 - (e_r / sigmaRot)^2) from the source <-> retarget object position error e_p [m]
+  # and rotation error e_r [deg], smoothed in time (minimum over +-smoothSec, then mean over smoothSec), and
+  # q_eff = 1 - c * (1 - q) with c = object curriculum progress. The exponent coefficients of rp and rr are scaled
+  # by minBody + (1 - minBody) * q_eff, the one of rig by minIG + (1 - minIG) * q_eff; the key body reset threshold
+  # grows from 0.5 m to 1.0 m as q_eff -> 0 and reset_ig is only active for q_eff > 0.5. q_eff at t+1 and t+16
+  # replaces the motionQualityDir observation (numObs stays 4054). Needs motionSourceDir and motionQualityDir: null.
+  # null = off. Proposed:
+  #   rewardQualityScale:
+  #     sigmaPos: 0.2
+  #     sigmaRot: 30.0
+  #     minBody: 0.3
+  #     minIG: 0.1
+  #     smoothSec: 0.5
+  rewardQualityScale: null
   # Added: PhysX blow-up detection (UltraG1Retarget._handle_blowups). An environment counts as exploded when any
   # threshold is exceeded; it is then terminated and reset, its reward and obs are zeroed, a [blowup] line is
   # printed and its last historyLen steps are saved to logDir/blowup_*.pt (at most maxDumps files per process).
