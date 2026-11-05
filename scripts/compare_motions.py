@@ -27,7 +27,7 @@ REPO = Path(__file__).resolve().parents[1]
 # Folders to compare
 SOURCE_DIR = REPO / "InterAct/all_motions"                                    # original [T, 591] motions
 RETARGET_DIR = REPO / "output/retarget_export_080_largebox"                   # retargeted [T, 630] G1 motions
-ROLLOUT_DIR = REPO / "output/teacher_rollout_motions/more_rop_with_curr_source"        # <clip>.pt teacher rollouts
+ROLLOUT_DIR = REPO / "output/teacher_rollout_motions/quality_scaling_14000"        # <clip>.pt teacher rollouts
 
 OBJ_POS_SRC, OBJ_ROT_SRC = slice(318, 321), slice(321, 325)  # [T, 591] source layout
 OBJ_POS_G1, OBJ_ROT_G1 = slice(71, 74), slice(74, 78)        # [T, 630] G1 layout (also first 630 of observed_hoi)

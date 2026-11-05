@@ -10,14 +10,14 @@ import matplotlib.pyplot as plt
 import numpy as np
 
 # Load Tensors
-clip = "036"
+clip = "072"
 subject = "sub12_largebox"
 motion_name = f"{subject}_{clip}"
 
 quality_data = torch.load(f"./output/retarget_export_080_largebox_quality/{motion_name}_xyz1p000000-1p000000-1p000000_080_080_080.pt")
 original_motion = torch.load(f"./InterAct/all_motions/{motion_name}.pt")
 retargeted_motion = torch.load(f"./output/retarget_export_080_largebox/{motion_name}_xyz1p000000-1p000000-1p000000_080_080_080.pt")
-rollout_motion = torch.load(f"./output/teacher_rollout_motions/more_rop_no_curr_source/{motion_name}_xyz1p000000-1p000000-1p000000_080_080_080.pt")
+rollout_motion = torch.load(f"./output/teacher_rollout_motions/quality_scaling/{motion_name}_xyz1p000000-1p000000-1p000000_080_080_080.pt")
 
 """
 Quality tensor cols:

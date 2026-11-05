@@ -653,7 +653,10 @@ class UltraG1Retarget(Humanoid_G1, Ultra):
         if self.ref_obj_q is not None:
             q_eff = self._quality_scale_q(torch.arange(self.num_envs, device=self.device), 0)
             min_body, min_ig = float(self._quality_scale['minBody']), float(self._quality_scale['minIG'])
-            quality_scale = (q_eff, min_body + (1.0 - min_body) * q_eff, min_ig + (1.0 - min_ig) * q_eff)
+            # objGain k: the object terms (rop, ror) get 1 + k * (1 - q_eff); 0 / missing = not scaled
+            obj_gain = float(self._quality_scale.get('objGain', 0.0))
+            quality_scale = (q_eff, min_body + (1.0 - min_body) * q_eff, min_ig + (1.0 - min_ig) * q_eff,
+                             1.0 + obj_gain * (1.0 - q_eff))
         self.rew_buf[:], ig_reset, contact_reset, kinematic_reset, metric_1, metric_2, reward_terms = compute_humanoid_reward(
                                                   self._curr_ref_obs,
                                                   self._curr_obs,
@@ -1298,13 +1301,14 @@ def compute_humanoid_reward(hoi_ref, hoi_obs, contact_buf, tar_contact_forces, k
     # on, else None. hoi_ref[:, 71:84] is then the object reference blended towards the source motion
     # (UltraG1Retarget._blend_ref_obj) and is tracked by the object terms and object_reset; the grasp
     # (ref_ig -> rig, reset_ig) stays on the retargeted object so that it does not move with the curriculum.
-    # quality_scale: None or (q_eff, s_body, s_ig), each [N] (UltraG1Retarget._compute_reward, env.rewardQualityScale):
-    # the exponent coefficients of rp, rr are scaled by s_body and the one of rig by s_ig, the key body reset
+    # quality_scale: None or (q_eff, s_body, s_ig, s_obj), each [N] (UltraG1Retarget._compute_reward,
+    # env.rewardQualityScale): the exponent coefficients of rp, rr are scaled by s_body, the one of rig by s_ig and
+    # the ones of rop, ror by s_obj (>= 1, stricter object tracking where the retarget is bad), the key body reset
     # threshold grows from 0.5 m to 1.0 m as q_eff -> 0, and reset_ig is only active for q_eff > 0.5.
     if quality_scale is not None:
-        q_eff, s_body, s_ig = quality_scale
+        q_eff, s_body, s_ig, s_obj = quality_scale
     else:
-        q_eff = s_body = s_ig = torch.ones(hoi_obs.shape[0], device=hoi_obs.device)
+        q_eff = s_body = s_ig = s_obj = torch.ones(hoi_obs.shape[0], device=hoi_obs.device)
 
     root_pos = hoi_obs[:,:3]
     root_rot = hoi_obs[:,3:3+4]
@@ -1408,6 +1412,7 @@ def compute_humanoid_reward(hoi_ref, hoi_obs, contact_buf, tar_contact_forces, k
 
     eig = ((ig - ref_ig)**2).sum(dim=-1) * (weight_1 + weight_2)  
 
+    # rig = torch.exp(-w_ig * (eig.sum(dim=-1).sum(dim=-1) * 0.5))  # original, without the quality scaling
     rig = torch.exp(-w_ig * s_ig * (eig.sum(dim=-1).sum(dim=-1) * 0.5))  # Changed: * s_ig
     
     reset_ig_1 = (((ig - ref_ig)**2).sum(dim=-1).sqrt() / torch.clamp(((ref_ig)**2).sum(dim=-1).sqrt(), min=0.5)).max(dim=-1)[0].max(dim=-1)[0] > 1.0
@@ -1418,11 +1423,13 @@ def compute_humanoid_reward(hoi_ref, hoi_obs, contact_buf, tar_contact_forces, k
     
     #ep = torch.mean(((ref_key_pos - key_pos)**2*quality[:, 0].view(-1, 1, 1)).sum(dim=-1),dim=-1)
     ep = torch.mean(((ref_key_pos - key_pos)**2).sum(dim=-1),dim=-1)
+    # rp = torch.exp(-ep*w['p'])  # original, without the quality scaling
     rp = torch.exp(-ep*w['p']*s_body)  # Changed: * s_body
     weight = torch.ones_like(ref_dof_pos).to(ref_dof_pos.device)
     # weight[:, :11] = 0.5 
     er = torch.mean(((ref_dof_pos - dof_pos)**2) * weight,dim=-1)
 
+    # rr = torch.exp(-er*w['r'])  # original, without the quality scaling
     rr = torch.exp(-er*w['r']*s_body)  # Changed: * s_body
     
     # body pos vel reward
@@ -1439,7 +1446,8 @@ def compute_humanoid_reward(hoi_ref, hoi_obs, contact_buf, tar_contact_forces, k
 
     # object pos reward
     eop = torch.mean(((ref_local_obj_pos - local_obj_pos)**2),dim=-1) # * (1 - weight_h.max(dim=-1)[0])
-    rop = torch.exp(-eop*w['op'])
+    # rop = torch.exp(-eop*w['op'])  # original, without the quality scaling
+    rop = torch.exp(-eop*w['op']*s_obj)  # Changed: * s_obj
 
     # object rot reward
     diff_quat_data = torch_utils.quat_mul_norm(torch_utils.quat_inverse(ref_local_obj_rot), local_obj_rot)
@@ -1447,7 +1455,8 @@ def compute_humanoid_reward(hoi_ref, hoi_obs, contact_buf, tar_contact_forces, k
     diff = diff_angle.view(-1, 1)
     
     eor = torch.mean(huber_loss(diff, 3),dim=-1)
-    ror = torch.exp(-eor*w['or'])
+    # ror = torch.exp(-eor*w['or'])  # original, without the quality scaling
+    ror = torch.exp(-eor*w['or']*s_obj)  # Changed: * s_obj
 
     # object pos vel reward
     eopv = torch.mean((ref_obj_pos_vel - obj_pos_vel)**2,dim=-1)
@@ -1517,7 +1526,7 @@ def compute_humanoid_reward(hoi_ref, hoi_obs, contact_buf, tar_contact_forces, k
         "err_key_pos": metric_1, "err_obj_points": metric_2,
     }
     if quality_scale is not None:
-        reward_terms.update(q_eff=q_eff, scale_body=s_body, scale_ig=s_ig)
+        reward_terms.update(q_eff=q_eff, scale_body=s_body, scale_ig=s_ig, scale_obj=s_obj)
     return tracking_reward, reset_ig, contact_reset, kinematic_reset, metric_1, metric_2, reward_terms
 
 def build_hoi_observations(root_pos, root_rot, root_vel, root_ang_vel, dof_pos, dof_vel, key_body_pos, 
