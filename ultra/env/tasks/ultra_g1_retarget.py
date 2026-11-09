@@ -264,6 +264,12 @@ class UltraG1Retarget(Humanoid_G1, Ultra):
             self.hoi_refs.append(F.pad(hoi_refs[i], pad_size, "constant", 0))
         self.hoi_data = torch.stack(self.hoi_data, dim=0).to(self.device)
         self.hoi_refs = torch.stack(self.hoi_refs, dim=0).unsqueeze(1).repeat(1, 1, 1, 1).to(self.device)
+        # Added: per-clip fall height [num_motions] of the pelvis, min(0.3 m, lowest reference pelvis height of the
+        # clip - 0.1 m). Terminates falls independently of the (quality-scaled) key body error; clips in which the
+        # human sits on the floor get a lower threshold. Used together with terminationHeight in _compute_reset.
+        valid = torch.arange(max_length, device=self.device)[None] < self.max_episode_length[:, None]
+        ref_root_z_min = self.hoi_data[..., 2].masked_fill(~valid, float('inf')).min(dim=1)[0]
+        self._fall_heights = torch.clamp(ref_root_z_min - 0.1, max=0.3)
         # [num_motions, max_length, 3]: retarget reward, foot keypoint error, object point error
         self.ref_quality = None
         if qualities:
@@ -718,11 +724,26 @@ class UltraG1Retarget(Humanoid_G1, Ultra):
         return
     
     def _compute_reset(self):
-        self.reset_buf[:], self._terminate_buf[:] = compute_humanoid_reset(self.reset_buf, self.progress_buf, self.obs_buf,
-                                                   self._contact_forces,
-                                                   self._rigid_body_pos, self.max_episode_length[self.data_id],
-                                                   self._enable_early_termination, self._termination_heights, self._termination_heights_init, self._curr_ref_obs, self._curr_obs, self.start_times, self.rollout_length, self._reset_ig, torch.any(self.contact_reset > 20, dim=-1), torch.logical_or(self.is_stand_still, self.progress_buf >= self.max_episode_length[self.data_id] - 20)
-                                                   )
+        self.reset_buf[:], self._terminate_buf[:] = compute_humanoid_reset(
+            self.reset_buf,
+            self.progress_buf,
+            self.obs_buf,
+            self._contact_forces,
+            self._rigid_body_pos,
+            self.max_episode_length[self.data_id],
+            self._enable_early_termination,
+            # Changed terminationHeight to the per-clip fall height
+            self._fall_heights[self.data_id],
+            #self._termination_heights,
+            self._termination_heights_init,
+            self._curr_ref_obs,
+            self._curr_obs,
+            self.start_times,
+            self.rollout_length,
+            self._reset_ig,
+            torch.any(self.contact_reset > 20, dim=-1),
+            torch.logical_or(self.is_stand_still, self.progress_buf >= self.max_episode_length[self.data_id] - 20)
+        )
         self.obs_history_buf[self.reset_buf > 0] *= 0
         return
 
