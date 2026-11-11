@@ -1466,12 +1466,18 @@ def compute_humanoid_reward(hoi_ref, hoi_obs, contact_buf, tar_contact_forces, k
     # print('rb', rp, rr, rpv, rrv, rig)
 
     # object pos reward
-    eop = torch.mean(((ref_local_obj_pos - local_obj_pos)**2),dim=-1) # * (1 - weight_h.max(dim=-1)[0])
+    # Changed: object position error in world coordinates instead of relative to the root (heading frame of the
+    # root, height absolute), so that a robot standing at the wrong place with the object correctly in its hands is
+    # penalized. Original (relative to the robot):
+    # eop = torch.mean(((ref_local_obj_pos - local_obj_pos)**2),dim=-1) # * (1 - weight_h.max(dim=-1)[0])
+    eop = torch.mean(((ref_obj_pos - obj_pos)**2),dim=-1)
     # rop = torch.exp(-eop*w['op'])  # original, without the quality scaling
     rop = torch.exp(-eop*w['op']*s_obj)  # Changed: * s_obj
 
     # object rot reward
-    diff_quat_data = torch_utils.quat_mul_norm(torch_utils.quat_inverse(ref_local_obj_rot), local_obj_rot)
+    # Changed: object rotation error in world coordinates instead of relative to the root heading. Original:
+    # diff_quat_data = torch_utils.quat_mul_norm(torch_utils.quat_inverse(ref_local_obj_rot), local_obj_rot)
+    diff_quat_data = torch_utils.quat_mul_norm(torch_utils.quat_inverse(ref_obj_rot), obj_rot)
     diff_angle, diff_axis = torch_utils.quat_to_angle_axis(diff_quat_data)
     diff = diff_angle.view(-1, 1)
     
