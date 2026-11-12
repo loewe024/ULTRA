@@ -56,7 +56,7 @@ env:
     sigmaRot: 30.0
     minBody: 0.3
     minIG: 0.1
-    objGain: 2.0
+    objGain: 1.0
     smoothSec: 0.5
   # rewardQualityScale: null
   # Added: PhysX blow-up detection (UltraG1Retarget._handle_blowups). An environment counts as exploded when any
@@ -123,8 +123,8 @@ env:
     pv: 0.1
     rv: 0.001
 
-    op: 30.0
-    or: 1.0
+    op: 20.0
+    or: 0.7
     opv: 0.1
     orv: 0.
 

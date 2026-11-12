@@ -69,7 +69,10 @@ class UltraAgentDistill(ultra_agent.UltraAgent):
         super().init_tensors()
         batch_shape = self.experience_buffer.obs_base_shape
         self.experience_buffer.tensor_dict['expert_mask'] = torch.zeros(batch_shape, dtype=torch.float32, device=self.ppo_device)
-        self.experience_buffer.tensor_dict['teacher_obs'] = torch.zeros((*batch_shape, 4052), dtype=torch.float32, device=self.ppo_device)
+        # Changed: teacher obs size from the env (env.numObs, 4054 with the retarget quality obs) instead of 4052
+        # self.experience_buffer.tensor_dict['teacher_obs'] = torch.zeros((*batch_shape, 4052), dtype=torch.float32, device=self.ppo_device)
+        teacher_obs_dim = self.vec_env.env.task.obs_buf.shape[-1]
+        self.experience_buffer.tensor_dict['teacher_obs'] = torch.zeros((*batch_shape, teacher_obs_dim), dtype=torch.float32, device=self.ppo_device)
         self.experience_buffer.tensor_dict['expert'] = torch.zeros((*batch_shape, 29), dtype=torch.float32, device=self.ppo_device)
         self.experience_buffer.tensor_dict['vae_noise'] = torch.zeros((*batch_shape, self.vae_dim), dtype=torch.float32, device=self.ppo_device)
         self.experience_buffer.tensor_dict['prior_mu_prev'] = torch.zeros((*batch_shape, self.vae_dim), dtype=torch.float32, device=self.ppo_device)

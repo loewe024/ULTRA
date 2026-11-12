@@ -142,6 +142,14 @@ def load_teacher_policy(model_path, network_params, obs_dim, actions_num, num_se
         'value_size': 1,
     })
     checkpoint = load_checkpoint(model_path)
+    # Added: the teacher obs of the student env (env.numObs) must match the checkpoint; 4052 = original teacher,
+    # 4054 = teacher trained with env.rewardQualityScale or env.motionQualityDir (quality obs at t+1 and t+16)
+    ckpt_obs = checkpoint['model']['a2c_network.actor_mlp.0.weight'].shape[1]
+    if ckpt_obs != obs_dim:
+        raise ValueError(
+            f"teacher {model_path} expects {ckpt_obs} observations, env.numObs is {obs_dim}. A teacher trained with "
+            f"env.rewardQualityScale (or motionQualityDir) needs numObs 4054 and the same rewardQualityScale / "
+            f"motionSourceDir in the student config, the original teacher numObs 4052 and rewardQualityScale: null.")
     running_mean, running_var = input_normalizer(checkpoint)
     load_model_state(model, checkpoint)
     model.to(device)

@@ -2,11 +2,11 @@
 # scripts/render_rollout.py); read by ultra/utils/rollout_cfg.py. Paths are relative to the repository root.
 
 # trained teacher checkpoint
-checkpoint: output/teacher_training/teacher_quality_scaling/g1_teacher_00014000.pth
+checkpoint: output/teacher_training/teacher_quality_world_obj/g1_teacher_00016000.pth
 # folder of the retargeted [T, 630] G1 motions; every .pt in it is rolled out
 motion_dir: output/retarget_export_080_largebox
 # output folder: <clip>.pt rollouts, env.yaml, logs/ (one Isaac log per run), videos/
-output_dir: output/teacher_rollout_motions/quality_scaling_14000
+output_dir: output/teacher_rollout_motions/quality_world_obj_16000
 # folder of the original [T, 591] source motions (30 Hz); used for the source object trajectory, the skeleton in
 # the videos
 source_dir: InterAct/all_motions

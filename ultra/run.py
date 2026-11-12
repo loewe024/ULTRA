@@ -272,6 +272,12 @@ def main():
     if args.motion_file:
         cfg['env']['motion_file'] = args.motion_file
 
+    # Added: the student VAE encoder reads the teacher obs (env.numObs: 4052 original teacher, 4054 with the
+    # retarget quality obs); its input size follows the env config instead of the fixed default 4052
+    modal_cfg = cfg_train['params'].get('network', {}).get('modal_config')
+    if modal_cfg is not None and 'numObs' in cfg['env']:
+        modal_cfg['teacher_obs_dim'] = cfg['env']['numObs']
+
     if args.play_dataset:
         cfg['env']['playdataset'] = True
 

@@ -413,6 +413,14 @@ class UltraG1Retarget(Humanoid_G1, Ultra):
         ref[:, 74:78] = quaternion_slerp(ref[:, 74:78], src[:, 3:7], c)
         ref[:, 78:84] = torch.lerp(ref[:, 78:84], src[:, 7:13], c)
 
+    def _ref_obj_state(self, env_ids, ts):
+        """Added: object reference state [len(env_ids), 13] (layout of hoi_refs[..., 71:84]) of frames ts, blended
+        towards the source motion like the observations (_blend_ref_obj). Used by the student tasks for the object
+        speed (long/short goal horizon) and the RL goal positions."""
+        ref = self.hoi_refs[self.data_id[env_ids], 0, ts].clone()
+        self._blend_ref_obj(ref, env_ids, ts)
+        return ref[:, 71:84]
+
     def _next_ref_ts(self, env_ids, delta_t):
         """Reference frame used by the observations for delta_t; delta_t = 0 is the reward frame."""
         ts = self.progress_buf[env_ids]

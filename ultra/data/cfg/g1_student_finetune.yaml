@@ -19,7 +19,9 @@ env:
   dataFPS: 30
   dataFramesScale: 1 # 25->30fps
   ballSize: 1.
-  numObs: 4052
+  # teacher obs, must match env.teacherPolicy: 4052 original teacher, 4054 with rewardQualityScale /
+  # motionQualityDir (see below)
+  numObs: 4054
   # numObsStudent: 4052
   numObsStudent: 1496  # Should match computed student obs length with PCA corners + masks
   debug_obs_layout: True
@@ -27,7 +29,35 @@ env:
   numDoF: 29
   numDoFWrist: 3
   numDoFHand: 0
-  motion_file: InterAct/OMOMO_retarget_aug
+  # motion_file: InterAct/OMOMO_retarget_aug
+  motion_file: output/retarget_export_080_largebox
+  # Added (as in g1_teacher.yaml): object reference of the teacher and student obs and of the reward target.
+  # motionSourceDir: directory of the original source motions (<name before '_xyz'>.pt, [T, 591], 30 Hz); their
+  # object trajectory is loaded frame-aligned with motion_file (only for retargeted clips, e.g.
+  # output/retarget_export_*). null = retargeted object trajectory only (original ULTRA behaviour).
+  motionSourceDir: InterAct/all_motions
+  # Object reference blended from the retargeted (0.0) to the source (1.0) object trajectory
+  # (UltraG1Retarget._blend_ref_obj). Use the setting the teacher ended its training with (objCurriculumProgress
+  # or end of objCurriculumEpochs in its g1_teacher.yaml); with motionSourceDir and without this key the
+  # curriculum of objCurriculumEpochs runs again from the start of the student training.
+  objCurriculumProgress: 1.0
+  # Retarget quality observation of the teacher; must be the same as in the teacher's g1_teacher.yaml.
+  # rewardQualityScale (needs motionSourceDir) or motionQualityDir append q at t+1 and t+16 to the teacher obs:
+  # numObs 4054. Both null (original teacher ultra/weights/teacher_ultra_inference.pth): numObs 4052.
+  # With objCurriculumProgress 0.0 q_eff = 1 (the teacher sees the start of its curriculum).
+  motionQualityDir: null
+  rewardQualityScale:
+    sigmaPos: 0.2
+    sigmaRot: 30.0
+    minBody: 0.3
+    minIG: 0.1
+    objGain: 1.0
+    smoothSec: 0.5
+  # rewardQualityScale: null
+  # Added (as in g1_teacher.yaml): resets in the middle of a clip spawn the robot this much higher [m], so that no
+  # foot-ground contact of the previous episode survives the teleport (cause of the blow-ups, see
+  # UltraG1Retarget._set_env_state). 0 = original behaviour.
+  resetRootLift: 0.01
   robotType: 'g1/g1_29dof.urdf'
   objectDensity: 25
   localRootObs: False
@@ -52,7 +82,9 @@ env:
   enableEarlyTermination: True
   scaling: 0.8
   initRootHeight: 0.95
-  teacherPolicy: ultra/weights/teacher_ultra_inference.pth
+  # trained teacher (DAgger expert), replace by the final checkpoint. Original ULTRA teacher:
+  # ultra/weights/teacher_ultra_inference.pth (numObs 4052, motionSourceDir and rewardQualityScale null)
+  teacherPolicy: output/teacher_training/teacher_quality_world_obj/g1_teacher_00012250.pth
   history_len: 10 # 0 for no history, >0 for history length
   history_stride: 1
   # Observation masking configuration (for robustness)

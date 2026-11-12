@@ -492,7 +492,9 @@ class UltraDistillObjV2Point(UltraG1Retarget):
         new_ids = env_ids[new_episode]
         if new_ids.numel() > 0:
             ts = self.progress_buf[new_ids]
-            ref_vel = self.hoi_refs[self.data_id[new_ids], 0, ts, 78:81]
+            # Changed: object speed of the (source-blended) object reference, see _ref_obj_state
+            # ref_vel = self.hoi_refs[self.data_id[new_ids], 0, ts, 78:81]
+            ref_vel = self._ref_obj_state(new_ids, ts)[:, 7:10]
             ref_speed = torch.norm(ref_vel, dim=-1)
             use_long = ref_speed < self.long_term_speed_threshold
             long_horizon = torch.randint_like(new_ids, 120) + 120
@@ -759,6 +761,14 @@ class UltraDistillObjV2Point(UltraG1Retarget):
             self._curr_ref_obs[next_ts<=ts] = self.hoi_data[self.data_id[next_ts<=ts], next_ts[next_ts<=ts]].clone()
             ref_obs = self.hoi_data[self.data_id[env_ids], next_ts].clone()
             ref_obs_local = self.hoi_data[self.data_id[env_ids], next_ts_local].clone()
+            # Added: object reference from the source motion, as in UltraG1Retarget._compute_observations_iter
+            # (env.motionSourceDir + objCurriculumProgress: 1.0 = source, 0.0 = retargeted object trajectory) for the
+            # teacher and the student obs and the reward target; the grasp term keeps the retargeted object
+            if self.ref_src_obj is not None:
+                self._curr_ref_ret_obj = self._curr_ref_obs[:, 71:84].clone()
+                self._blend_ref_obj(self._curr_ref_obs, env_ids, torch.where(next_ts <= ts, next_ts, ts))
+                self._blend_ref_obj(ref_obs, env_ids, next_ts)
+                self._blend_ref_obj(ref_obs_local, env_ids, next_ts_local)
             self._update_goal_debug(ref_obs, env_ids)
             obs = self._compute_humanoid_obs(env_ids, ref_obs, next_ts, student_obs, local_ref_obs=ref_obs_local)
             obs_shape = obs.shape[-1]
@@ -800,6 +810,14 @@ class UltraDistillObjV2Point(UltraG1Retarget):
             self._curr_ref_obs[env_ids[next_ts<=ts]] = self.hoi_data[self.data_id[env_ids[next_ts<=ts]], next_ts[next_ts<=ts]].clone()
             ref_obs = self.hoi_data[self.data_id[env_ids], next_ts].clone()
             ref_obs_local = self.hoi_data[self.data_id[env_ids], next_ts_local].clone()
+            # Added: object reference from the source motion, same as above for a subset of envs
+            if self.ref_src_obj is not None:
+                curr_ref = self._curr_ref_obs[env_ids]
+                self._curr_ref_ret_obj[env_ids] = curr_ref[:, 71:84]
+                self._blend_ref_obj(curr_ref, env_ids, torch.where(next_ts <= ts, next_ts, ts))
+                self._curr_ref_obs[env_ids] = curr_ref
+                self._blend_ref_obj(ref_obs, env_ids, next_ts)
+                self._blend_ref_obj(ref_obs_local, env_ids, next_ts_local)
             self._update_goal_debug(ref_obs, env_ids)
             obs = self._compute_humanoid_obs(env_ids, ref_obs, next_ts, student_obs, local_ref_obs=ref_obs_local)
             obs_shape = obs.shape[-1]
